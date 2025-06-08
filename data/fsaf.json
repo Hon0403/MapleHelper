@@ -1,0 +1,78 @@
+{
+  "waypoints": [],
+  "obstacles": [],
+  "special_zones": [],
+  "area_grid": {
+    "0.35,0.28": "forbidden",
+    "0.36,0.28": "walkable",
+    "0.37,0.28": "walkable",
+    "0.38,0.28": "walkable",
+    "0.39,0.28": "walkable",
+    "0.4,0.28": "walkable",
+    "0.41,0.28": "walkable",
+    "0.42,0.28": "walkable",
+    "0.43,0.28": "walkable",
+    "0.44,0.28": "walkable",
+    "0.45,0.28": "walkable",
+    "0.46,0.28": "walkable",
+    "0.47,0.28": "walkable",
+    "0.48,0.28": "walkable",
+    "0.49,0.28": "walkable",
+    "0.5,0.28": "walkable",
+    "0.51,0.28": "walkable",
+    "0.52,0.28": "walkable",
+    "0.53,0.28": "walkable",
+    "0.54,0.28": "walkable",
+    "0.55,0.28": "walkable",
+    "0.56,0.28": "forbidden"
+  },
+  "obstacle_types": {
+    "wall": {
+      "name": "牆壁",
+      "color": "red",
+      "passable": false
+    },
+    "water": {
+      "name": "水域",
+      "color": "blue",
+      "passable": false
+    },
+    "tree": {
+      "name": "樹木",
+      "color": "green",
+      "passable": false
+    },
+    "building": {
+      "name": "建築物",
+      "color": "gray",
+      "passable": false
+    }
+  },
+  "action_zones": {
+    "rope": {
+      "name": "繩索",
+      "color": "brown",
+      "action": "climb_rope"
+    },
+    "ladder": {
+      "name": "階梯",
+      "color": "yellow",
+      "action": "climb_ladder"
+    },
+    "door": {
+      "name": "門",
+      "color": "purple",
+      "action": "open_door"
+    },
+    "portal": {
+      "name": "傳送點",
+      "color": "cyan",
+      "action": "use_portal"
+    },
+    "npc": {
+      "name": "NPC",
+      "color": "orange",
+      "action": "talk_npc"
+    }
+  }
+}
