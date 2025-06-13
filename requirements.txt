@@ -1,0 +1,11 @@
+PyQt5>=5.15.0
+opencv-python>=4.5.0
+numpy>=1.19.0
+Pillow>=8.0.0
+adbutils>=0.10.0
+
+# 如需 SIFT 支援，建議安裝 opencv-contrib-python
+opencv-contrib-python>=4.5.0
+
+# 若有用到 yaml 設定檔
+pyyaml>=5.3.1 

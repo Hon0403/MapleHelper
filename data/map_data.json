@@ -1,0 +1,14 @@
+{
+  "waypoints": [],
+  "obstacles": [],
+  "special_zones": [],
+  "area_grid": {
+    "0.597,0.404": "forbidden",
+    "0.531,0.404": "forbidden",
+    "0.538,0.412": "walkable",
+    "0.550,0.412": "walkable",
+    "0.562,0.412": "walkable",
+    "0.573,0.412": "walkable",
+    "0.585,0.412": "walkable"
+  }
+}
