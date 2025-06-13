@@ -90,34 +90,25 @@ class SimpleADB:
         return success
 
     def attack(self) -> bool:
-        """✅ 改進版攻擊"""
+        """✅ 改進版：長按攻擊"""
         if not self.is_connected:
             print("❌ 設備未連接，無法攻擊")
             return False
         
         try:
             # 使用 A 鍵作為攻擊鍵
-            print("🎯 發送攻擊按鍵...")
+            print("🎯 發送長按攻擊...")
             
-            # 按下按鍵
-            success = ADBUtils.send_keyevent(self.device_id, 'KEYCODE_A')
+            # 長按按鍵
+            success = ADBUtils.send_longpress_keyevent(self.device_id, 'KEYCODE_A')
             if not success:
-                print("❌ 攻擊按鍵發送失敗")
+                print("❌ 長按攻擊失敗")
                 return False
                 
             # 等待按鍵持續時間
-            time.sleep(0.3)
+            time.sleep(0.5)  # 增加長按時間
             
-            # 再次發送按鍵（確保釋放）
-            success = ADBUtils.send_keyevent(self.device_id, 'KEYCODE_A')
-            if not success:
-                print("❌ 攻擊按鍵釋放失敗")
-                return False
-                
-            # 等待一小段時間
-            time.sleep(0.1)
-            
-            print("✅ 攻擊動作完成")
+            print("✅ 長按攻擊完成")
             return True
             
         except Exception as e:

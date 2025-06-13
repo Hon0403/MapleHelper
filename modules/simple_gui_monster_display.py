@@ -867,151 +867,168 @@ class MonsterDetectionGUI(QMainWindow):
             print(f"⚠️ 清理 OpenCV 資源時發生警告: {e}")
 
     def _opencv_display_loop(self):
-        """整合版：即時顯示循環（包含路徑可視化）"""
+        """完整版：即時顯示循環 - 包含路徑規劃可視化"""
         window_name = "Maple Helper - 即時顯示"
         try:
-            print("🎥 開始即時顯示循環")
-            print(f"✅ 怪物檢測器狀態: {'已初始化' if self.monster_detector else '未初始化'}")
-            print(f"✅ 路徑系統狀態: {'已初始化' if self.waypoint_system else '未初始化'}")
-            
-            # 創建視窗並設置大小
+            print("🎥 開始即時顯示循環（含路徑規劃）")
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-            cv2.resizeWindow(window_name, 1280, 720)  # 設置初始大小
-            
+            cv2.resizeWindow(window_name, 1280, 720)
+
             while self._opencv_display_running:
                 try:
-                    # 獲取畫面
                     frame = self.ro_helper.capturer.grab_frame()
                     if frame is None:
-                        print("⚠️ 無法獲取畫面")
                         time.sleep(0.1)
                         continue
 
                     # 獲取小地圖位置
                     minimap_rect = self.ro_helper.tracker._find_minimap_simple(
                         cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
-                    
-                    if minimap_rect is None:
-                        print("⚠️ 無法找到小地圖")
-                        time.sleep(0.1)
-                        continue
-                    
-                    x1, y1, x2, y2 = minimap_rect
-                    print(f"📍 小地圖位置: ({x1}, {y1}) -> ({x2}, {y2})")
-                    
-                    # 創建一個新的畫布，大小與原始畫面相同
-                    display_frame = frame.copy()
-                    
-                    # 1. 繪製怪物辨識框
-                    if self.monster_detector:
-                        monsters = self.monster_detector.detect_monsters(frame)
-                        print(f"🎯 檢測到 {len(monsters)} 個怪物")
-                        for monster in monsters:
-                            if 'position' in monster and 'template_size' in monster:
-                                x, y = monster['position']
-                                w, h = monster['template_size']
-                                # 繪製辨識框
-                                cv2.rectangle(display_frame, (x, y), (x + w, y + h), (0, 255, 255), 2)
-                                # 繪製怪物名稱和信心度
-                                name = monster.get('name', 'Unknown')
-                                confidence = monster.get('confidence', 0)
-                                text = f"{name} ({confidence:.2f})"
-                                cv2.putText(display_frame, text, (x, y - 5), 
-                                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-                    
-                    # 2. 繪製小地圖邊框
-                    cv2.rectangle(display_frame, (x1, y1), (x2, y2), (255, 255, 255), 2)
-                    
-                    # 3. 繪製路徑點和連接線
-                    waypoints = self.waypoint_system.get_all_waypoints()
-                    print(f"🗺️ 路徑點數量: {len(waypoints)}")
-                    for i in range(len(waypoints) - 1):
-                        rel1 = waypoints[i]['pos']
-                        rel2 = waypoints[i+1]['pos']
-                        p1 = (int(x1 + rel1[0] * (x2 - x1)), int(y1 + rel1[1] * (y2 - y1)))
-                        p2 = (int(x1 + rel2[0] * (x2 - x1)), int(y1 + rel2[1] * (y2 - y1)))
-                        # 繪製路徑線
-                        cv2.line(display_frame, p1, p2, (0, 255, 0), 2)  # 綠色線
-                        cv2.arrowedLine(display_frame, p1, p2, (0, 255, 0), 2)
-                    
-                    # 4. 繪製路徑點
-                    for i, waypoint in enumerate(waypoints):
-                        rel_pos = waypoint['pos']
-                        screen_x = int(x1 + rel_pos[0] * (x2 - x1))
-                        screen_y = int(y1 + rel_pos[1] * (y2 - y1))
-                        # 繪製路徑點
-                        cv2.circle(display_frame, (screen_x, screen_y), 8, (0, 255, 0), -1)
-                        # 繪製路徑點編號
-                        label = waypoint.get('name') or f"WP{i+1}"
-                        cv2.putText(display_frame, label, (screen_x + 10, screen_y), 
-                                  cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                    
-                    # 5. 繪製A*即時路徑
-                    auto_combat = getattr(self.ro_helper, 'auto_combat', None)
-                    if auto_combat and hasattr(auto_combat, 'last_planned_path') and auto_combat.last_planned_path:
-                        path = auto_combat.last_planned_path
-                        print(f"🛣️ A*路徑點數量: {len(path)}")
-                        for i in range(len(path) - 1):
-                            rel1 = path[i]
-                            rel2 = path[i+1]
-                            p1 = (int(x1 + rel1[0] * (x2 - x1)), int(y1 + rel1[1] * (y2 - y1)))
-                            p2 = (int(x1 + rel2[0] * (x2 - x1)), int(y1 + rel2[1] * (y2 - y1)))
-                            # 繪製A*路徑
-                            cv2.line(display_frame, p1, p2, (255, 0, 0), 3)  # 藍色粗線
-                            cv2.arrowedLine(display_frame, p1, p2, (255, 0, 0), 3)
-                    
-                    # 6. 繪製角色位置
-                    rel_pos = self.ro_helper.tracker.track_player(frame)
-                    if rel_pos:
-                        char_x = int(x1 + rel_pos[0] * (x2 - x1))
-                        char_y = int(y1 + rel_pos[1] * (y2 - y1))
-                        print(f"👤 角色位置: ({char_x}, {char_y})")
-                        # 繪製角色位置
-                        cv2.circle(display_frame, (char_x, char_y), 10, (0, 0, 255), -1)  # 紅色圓圈
-                        cv2.putText(display_frame, "角色", (char_x + 10, char_y), 
-                                  cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-                    
-                    # 7. 繪製小地圖上的怪物位置
-                    if self.monster_detector:
-                        for monster in monsters:
-                            if 'pos' in monster:
-                                rel_pos = monster['pos']
-                                monster_x = int(x1 + rel_pos[0] * (x2 - x1))
-                                monster_y = int(y1 + rel_pos[1] * (y2 - y1))
-                                # 繪製怪物位置
-                                cv2.circle(display_frame, (monster_x, monster_y), 6, (0, 255, 255), -1)  # 黃色圓圈
-                                name = monster.get('name', 'Unknown')
-                                cv2.putText(display_frame, name, (monster_x + 10, monster_y), 
-                                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
-                    # 顯示畫面
+                    if minimap_rect is None:
+                        # 全畫面顯示模式（僅怪物檢測）
+                        display_frame = self._draw_monsters_on_full_frame(frame)
+                    else:
+                        # 小地圖模式（完整可視化）
+                        display_frame = self._draw_complete_visualization(frame, minimap_rect)
+
                     cv2.imshow(window_name, display_frame)
-                    
-                    # 檢查按鍵
-                    key = cv2.waitKey(1) & 0xFF
-                    if key == ord('q') or key == 27:  # q 或 ESC
-                        print("👋 使用者按下退出鍵")
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
                         break
-                        
+                    time.sleep(0.033)  # 約30FPS
+
                 except Exception as e:
-                    print(f"❌ 即時顯示錯誤: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    print(f"⚠️ 顯示循環單次異常: {e}")
                     time.sleep(0.1)
-                    
+
         except Exception as e:
-            print(f"❌ 即時顯示主循環錯誤: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"❌ 即時顯示循環錯誤: {e}")
         finally:
-            try:
-                cv2.destroyWindow(window_name)
-                # ✅ 重置按鈕文字
-                self.realtime_display_button.setText("📺 即時顯示")
-                print(f"✅ 已關閉即時顯示視窗")
-            except Exception as e:
-                print(f"⚠️ 關閉視窗警告: {e}")
-            self._opencv_display_running = False
+            cv2.destroyAllWindows()
+
+    def _draw_complete_visualization(self, frame, minimap_rect):
+        """完整的可視化繪製 - 包含路徑規劃"""
+        x1, y1, x2, y2 = minimap_rect
+        display_frame = frame.copy()
+        
+        # 1. 繪製小地圖邊框
+        cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(display_frame, "Minimap", (x1, y1-10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+        # 2. 繪製路徑點
+        if hasattr(self.ro_helper, 'waypoint_system') and self.ro_helper.waypoint_system:
+            waypoints = self.ro_helper.waypoint_system.waypoints
+            for i, waypoint in enumerate(waypoints):
+                wp_rel_pos = waypoint['pos']
+                wp_x = int(x1 + wp_rel_pos[0] * (x2 - x1))
+                wp_y = int(y1 + wp_rel_pos[1] * (y2 - y1))
+                
+                # 繪製路徑點
+                cv2.circle(display_frame, (wp_x, wp_y), 6, (255, 255, 0), 2)
+                cv2.putText(display_frame, str(i), (wp_x + 8, wp_y),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+
+        # 3. 繪製區域標記
+        if hasattr(self.ro_helper, 'waypoint_system') and self.ro_helper.waypoint_system.area_grid:
+            for pos_key, area_type in self.ro_helper.waypoint_system.area_grid.items():
+                try:
+                    if isinstance(pos_key, tuple):
+                        area_x, area_y = pos_key
+                    elif isinstance(pos_key, str) and ',' in pos_key:
+                        x_str, y_str = pos_key.split(',')
+                        area_x, area_y = float(x_str), float(y_str)
+                    else:
+                        continue
+
+                    # 轉換為螢幕座標
+                    screen_x = int(x1 + area_x * (x2 - x1))
+                    screen_y = int(y1 + area_y * (y2 - y1))
+
+                    # 根據區域類型選擇顏色
+                    if area_type == "walkable":
+                        color = (0, 255, 0)  # 綠色
+                        text = "W"
+                    elif area_type == "forbidden":
+                        color = (0, 0, 255)  # 紅色
+                        text = "F"
+                    elif area_type == "rope":
+                        color = (255, 165, 0)  # 橙色
+                        text = "R"
+                    else:
+                        color = (128, 128, 128)  # 灰色
+                        text = "?"
+
+                    # 繪製區域標記
+                    cv2.rectangle(display_frame, 
+                                (screen_x-3, screen_y-3), (screen_x+3, screen_y+3),
+                                color, -1)
+                    cv2.putText(display_frame, text, (screen_x-2, screen_y+2),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
+                except Exception:
+                    continue
+
+        # 4. ✅ 繪製A*路徑規劃（修正版）
+        try:
+            if hasattr(self.ro_helper, 'auto_combat') and self.ro_helper.auto_combat:
+                auto_combat = self.ro_helper.auto_combat
+                
+                # 檢查是否有最近的路徑規劃結果
+                if hasattr(auto_combat, 'last_planned_path') and auto_combat.last_planned_path:
+                    path = auto_combat.last_planned_path
+                    print(f"🛣️ 繪製A*路徑: {len(path)} 個點")
+                    
+                    # 繪製路徑線段
+                    for i in range(len(path) - 1):
+                        start_rel = path[i]
+                        end_rel = path[i + 1]
+                        
+                        # 轉換為螢幕座標
+                        start_x = int(x1 + start_rel[0] * (x2 - x1))
+                        start_y = int(y1 + start_rel[1] * (y2 - y1))
+                        end_x = int(x1 + end_rel[0] * (x2 - x1))
+                        end_y = int(y1 + end_rel[1] * (y2 - y1))
+                        
+                        # 繪製路徑線（藍色）
+                        cv2.line(display_frame, (start_x, start_y), (end_x, end_y), 
+                                (255, 0, 0), 2)
+                        
+                        # 繪製方向箭頭
+                        cv2.arrowedLine(display_frame, (start_x, start_y), (end_x, end_y),
+                                       (255, 0, 0), 2, tipLength=0.3)
+                    
+                    # 繪製路徑點
+                    for i, path_point in enumerate(path):
+                        path_x = int(x1 + path_point[0] * (x2 - x1))
+                        path_y = int(y1 + path_point[1] * (y2 - y1))
+                        
+                        # 起點綠色，終點紅色，中間點藍色
+                        if i == 0:
+                            color = (0, 255, 0)  # 起點綠色
+                        elif i == len(path) - 1:
+                            color = (0, 0, 255)  # 終點紅色
+                        else:
+                            color = (255, 0, 0)  # 路徑點藍色
+                        
+                        cv2.circle(display_frame, (path_x, path_y), 4, color, -1)
+                        cv2.putText(display_frame, str(i), (path_x + 6, path_y),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.3, color, 1)
+                    
+                    # 顯示路徑資訊
+                    path_info = f"A* Path: {len(path)} points"
+                    cv2.putText(display_frame, path_info, (10, 30),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+                else:
+                    # 顯示無路徑資訊
+                    cv2.putText(display_frame, "No A* Path", (10, 30),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (128, 128, 128), 2)
+        except Exception as e:
+            print(f"⚠️ A*路徑繪製失敗: {e}")
+
+        # 5. 繪製怪物檢測結果
+        display_frame = self._draw_monsters_on_frame(display_frame)
+
+        return display_frame
 
     def _toggle_auto_hunt(self, state):
         """切換自動狩獵狀態"""
@@ -1230,6 +1247,98 @@ class MonsterDetectionGUI(QMainWindow):
             print(f"❌ 更新地圖檔案列表失敗: {e}")
             import traceback
             traceback.print_exc()
+
+    def _draw_monsters_on_frame(self, display_frame):
+        """在畫面上繪製怪物檢測結果"""
+        try:
+            if self.monster_detector:
+                monsters = self.monster_detector.detect_monsters(display_frame)
+                
+                for monster in monsters:
+                    center = self._get_monster_center(monster)
+                    if center:
+                        # 繪製怪物邊界框
+                        if 'corners' in monster:
+                            corners = monster['corners']
+                            if isinstance(corners, np.ndarray):
+                                cv2.polylines(display_frame, [np.int32(corners)], 
+                                            True, (0, 255, 255), 2)
+                        
+                        # 繪製中心點
+                        cv2.circle(display_frame, center, 6, (0, 255, 255), -1)
+                        
+                        # 顯示怪物資訊
+                        name = monster.get('name', 'Unknown')
+                        confidence = monster.get('confidence', 0)
+                        text = f"{name} ({confidence:.2f})"
+                        
+                        cv2.putText(display_frame, text, (center[0]-20, center[1]-30),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        except Exception as e:
+            print(f"⚠️ 怪物繪製失敗: {e}")
+        
+        return display_frame
+
+    def _get_monster_center(self, monster):
+        """獲取怪物中心點"""
+        try:
+            # 優先使用 corners 屬性
+            if 'corners' in monster:
+                corners = monster['corners']
+                if isinstance(corners, np.ndarray):
+                    # 處理 (4, 1, 2) 形狀的陣列
+                    if len(corners.shape) == 3 and corners.shape[0] == 4 and corners.shape[2] == 2:
+                        corners = corners.reshape(4, 2)
+                    # 處理 (4, 2) 形狀的陣列
+                    if len(corners.shape) == 2 and corners.shape[1] == 2:
+                        center = np.mean(corners, axis=0)
+                        if len(center) >= 2:
+                            return (int(center[0]), int(center[1]))
+            
+            # 備用方案：使用 position 屬性
+            if 'position' in monster:
+                position = monster['position']
+                if isinstance(position, (tuple, list)) and len(position) >= 2:
+                    return (int(position[0]), int(position[1]))
+                elif isinstance(position, np.ndarray) and position.size >= 2:
+                    return (int(position[0]), int(position[1]))
+            
+            return None
+        except Exception as e:
+            print(f"⚠️ 獲取怪物中心點失敗: {e}")
+            return None
+
+    def _draw_monsters_on_full_frame(self, frame):
+        """在全畫面上繪製怪物檢測結果"""
+        try:
+            display_frame = frame.copy()
+            if self.monster_detector:
+                monsters = self.monster_detector.detect_monsters(frame)
+                
+                for monster in monsters:
+                    center = self._get_monster_center(monster)
+                    if center:
+                        # 繪製怪物邊界框
+                        if 'corners' in monster:
+                            corners = monster['corners']
+                            if isinstance(corners, np.ndarray):
+                                cv2.polylines(display_frame, [np.int32(corners)], 
+                                            True, (0, 255, 255), 2)
+                        
+                        # 繪製中心點
+                        cv2.circle(display_frame, center, 6, (0, 255, 255), -1)
+                        
+                        # 顯示怪物資訊
+                        name = monster.get('name', 'Unknown')
+                        confidence = monster.get('confidence', 0)
+                        text = f"{name} ({confidence:.2f})"
+                        
+                        cv2.putText(display_frame, text, (center[0]-20, center[1]-30),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        except Exception as e:
+            print(f"⚠️ 全畫面怪物繪製失敗: {e}")
+        
+        return display_frame
 
     def run(self):
         """啟動 GUI 事件循環"""
