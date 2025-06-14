@@ -265,3 +265,52 @@ class MovementUtils:
         
         # 檢查是否在可行走範圍內
         return MovementUtils.is_within_walkable_bounds(target_pos, area_grid)
+
+    @staticmethod
+    def is_within_walkable_bounds_enhanced(position: Tuple[float, float],
+                                       area_grid: Dict, 
+                                       tolerance_x: float = 0.01,
+                                       tolerance_y: float = 0.02) -> bool:
+        """✅ 高精度可行走範圍檢查"""
+        if not area_grid:
+            return False
+
+        current_x, current_y = position
+        walkable_positions = []
+        
+        print(f"🔍 檢查位置: ({current_x:.5f}, {current_y:.5f})")
+        
+        # 收集所有可行走位置
+        for pos_key, area_type in area_grid.items():
+            if area_type == "walkable":
+                try:
+                    if isinstance(pos_key, tuple):
+                        target_x, target_y = pos_key
+                    elif isinstance(pos_key, str) and ',' in pos_key:
+                        x_str, y_str = pos_key.split(',')
+                        target_x, target_y = float(x_str), float(y_str)
+                    else:
+                        continue
+                    
+                    walkable_positions.append((target_x, target_y))
+                except Exception:
+                    continue
+        
+        if not walkable_positions:
+            print("❌ 沒有可行走位置")
+            return False
+        
+        # ✅ 精確的範圍計算
+        for wx, wy in walkable_positions:
+            x_diff = abs(current_x - wx)
+            y_diff = abs(current_y - wy)
+            
+            print(f"📏 與 ({wx:.3f}, {wy:.3f}) 的距離: X差={x_diff:.5f}, Y差={y_diff:.5f}")
+            
+            # ✅ 使用不同的X和Y容忍度
+            if x_diff <= tolerance_x and y_diff <= tolerance_y:
+                print(f"✅ 位置匹配: 在可行走區域內")
+                return True
+        
+        print(f"❌ 位置不匹配: 不在任何可行走區域內")
+        return False

@@ -70,7 +70,7 @@ class MapleStoryHelper:
             # ✅ 設置預設戰鬥設定但不啟用
             self.auto_combat.hunt_settings = {
                 'combat_mode': 'safe_area',
-                'attack_range': 0.4,
+                'attack_range': 200,
                 'approach_distance': 0.1,
                 'retreat_distance': 0.05,
                 'attack_cooldown': 1.5,

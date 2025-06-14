@@ -3,12 +3,13 @@
   "obstacles": [],
   "special_zones": [],
   "area_grid": {
-    "0.597,0.404": "forbidden",
-    "0.531,0.404": "forbidden",
-    "0.538,0.412": "walkable",
-    "0.550,0.412": "walkable",
-    "0.562,0.412": "walkable",
-    "0.573,0.412": "walkable",
-    "0.585,0.412": "walkable"
+    "0.604,0.420": "forbidden",
+    "0.532,0.419": "forbidden",
+    "0.539,0.419": "walkable",
+    "0.550,0.419": "walkable",
+    "0.560,0.419": "walkable",
+    "0.570,0.419": "walkable",
+    "0.581,0.419": "walkable",
+    "0.591,0.419": "walkable"
   }
 }

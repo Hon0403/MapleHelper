@@ -47,47 +47,40 @@ class SimpleADB:
         self.is_connected = bool(self.device_id)
 
     def move(self, direction: str, duration: float = None) -> bool:
-        """✅ 基於搜索結果[7]的動態移動時間"""
+        """改進版移動方法"""
         if not self.is_connected:
-            print("❌ 設備未連接，無法移動")
-            return False
+            self.reconnect()
+            if not self.is_connected:
+                return False
 
         if direction not in self.movement_keys:
-            print(f"❌ 不支援的移動方向: {direction}")
             return False
 
-        # ✅ 如果沒有指定duration，使用預設短時間
         if duration is None:
-            duration = 0.5  # 預設短移動
+            duration = 0.5
 
         keycode = self.movement_keys[direction]
-        print(f"🏃 角色移動: {direction} (持續{duration:.2f}秒)")
 
-        # ✅ 基於搜索結果[7]的精確移動控制
-        if duration >= 0.8:
-            success = ADBUtils.send_longpress_keyevent(self.device_id, keycode)
-            if success:
-                print(f"⏰ 長按移動開始: {direction}")
-                time.sleep(duration)
-                print(f"✅ 長按移動結束: {direction}")
+        try:
+            if duration >= 0.8:
+                # 長距離移動：使用長按
+                success = ADBUtils.send_longpress_keyevent(self.device_id, keycode)
             else:
-                print(f"❌ 長按移動失敗: {direction}")
-        else:
-            # ✅ 短距離移動：多次短按
-            click_count = max(1, int(duration / 0.1))
-            success = True
-            for i in range(click_count):
-                if not ADBUtils.send_keyevent(self.device_id, keycode):
-                    success = False
-                    break
-                time.sleep(0.1)
-            
-            if success:
-                print(f"✅ 短距移動成功: {direction} ({duration:.2f}秒)")
-            else:
-                print(f"❌ 短距移動失敗: {direction}")
+                # 短距離移動：連續短按
+                click_count = max(1, int(duration / 0.1))
+                success = True
 
-        return success
+                for i in range(click_count):
+                    if not ADBUtils.send_keyevent(self.device_id, keycode):
+                        success = False
+                        break
+                    time.sleep(0.1)
+
+            return success
+
+        except Exception as e:
+            print(f"❌ 移動失敗: {e}")
+            return False
 
     def attack(self) -> bool:
         """✅ 改進版：長按攻擊"""
@@ -106,7 +99,7 @@ class SimpleADB:
                 return False
                 
             # 等待按鍵持續時間
-            time.sleep(0.5)  # 增加長按時間
+            time.sleep(1.0)  # 增加長按時間到 1 秒
             
             print("✅ 長按攻擊完成")
             return True

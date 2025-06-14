@@ -867,26 +867,24 @@ class MonsterDetectionGUI(QMainWindow):
             print(f"⚠️ 清理 OpenCV 資源時發生警告: {e}")
 
     def _opencv_display_loop(self):
-        """完整版：即時顯示循環 - 包含路徑規劃可視化"""
-        window_name = "Maple Helper - 即時顯示"
+        """OpenCV 即時顯示循環"""
         try:
-            print("🎥 開始即時顯示循環（含路徑規劃）")
+            window_name = "MapleStory Helper - 即時顯示"
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-            cv2.resizeWindow(window_name, 1280, 720)
-
+            
             while self._opencv_display_running:
                 try:
+                    # 獲取當前畫面
                     frame = self.ro_helper.capturer.grab_frame()
                     if frame is None:
                         time.sleep(0.1)
                         continue
-
+                    
                     # 獲取小地圖位置
-                    minimap_rect = self.ro_helper.tracker._find_minimap_simple(
-                        cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
-
+                    minimap_rect = self.ro_helper.tracker.find_minimap()
+                    
                     if minimap_rect is None:
-                        # 全畫面顯示模式（僅怪物檢測）
+                        # 全畫面模式
                         display_frame = self._draw_monsters_on_full_frame(frame)
                     else:
                         # 小地圖模式（完整可視化）
@@ -915,7 +913,7 @@ class MonsterDetectionGUI(QMainWindow):
         cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
         cv2.putText(display_frame, "Minimap", (x1, y1-10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-
+        
         # 2. 繪製路徑點
         if hasattr(self.ro_helper, 'waypoint_system') and self.ro_helper.waypoint_system:
             waypoints = self.ro_helper.waypoint_system.waypoints
@@ -967,7 +965,7 @@ class MonsterDetectionGUI(QMainWindow):
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
                 except Exception:
                     continue
-
+                    
         # 4. ✅ 繪製A*路徑規劃（修正版）
         try:
             if hasattr(self.ro_helper, 'auto_combat') and self.ro_helper.auto_combat:
