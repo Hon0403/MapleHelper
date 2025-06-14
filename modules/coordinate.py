@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import os
 from PIL import Image
+import time
 
 def simple_coordinate_conversion(canvas_x, canvas_y, canvas_size, minimap_size):
     """AutoMaple風格：極簡座標轉換"""
@@ -289,24 +290,32 @@ class TemplateMatcherTracker:
     def minimap_img(self):
         return self.cropped_minimap_img
 
-    def get_player_main_screen_pos(self, frame=None):
-        """
-        根據小地圖相對座標與 minimap_rect 推算主畫面像素座標
-        回傳 (main_x, main_y) 或 None
-        """
-        if frame is None and self.capturer:
-            frame = self.capturer.grab_frame()
-        if frame is None:
-            return None
-        # 取得小地圖範圍
-        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        minimap_rect = self._find_minimap_simple(gray_frame)
-        if minimap_rect is None:
-            return None
-        x1, y1, x2, y2 = minimap_rect
-        # 取得角色在小地圖的相對座標
-        rel_x, rel_y = self.track_player(frame)
-        # 推算主畫面像素座標
-        main_x = int(x1 + rel_x * (x2 - x1))
-        main_y = int(y1 + rel_y * (y2 - y1))
-        return (main_x, main_y)
+    def draw_player_on_main_screen(self, frame):
+        """在主畫面上標記角色位置"""
+        try:
+            # 直接回傳原始 frame，不再標記主畫面角色
+            return frame
+        except Exception as e:
+            print(f"❌ 角色主畫面標記失敗: {e}")
+            return frame
+
+    def draw_enhanced_player_tracking(self, frame):
+        """增強版角色追蹤顯示"""
+        try:
+            display_frame = frame.copy()
+            # 不再呼叫 draw_player_on_main_screen
+            # 不再標記主畫面角色
+            # 只保留移動軌跡與方向指示（如有）
+            if hasattr(self, 'position_history'):
+                for i in range(1, len(self.position_history)):
+                    prev_pos = self.position_history[i-1]
+                    curr_pos = self.position_history[i]
+                    if prev_pos and curr_pos:
+                        cv2.line(display_frame, prev_pos, curr_pos, (100, 100, 255), 2)
+            if hasattr(self, 'last_movement_direction'):
+                # 不再呼叫 get_player_main_screen_pos
+                pass
+            return display_frame
+        except Exception as e:
+            print(f"❌ 增強追蹤顯示失敗: {e}")
+            return frame

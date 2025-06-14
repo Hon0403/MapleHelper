@@ -644,6 +644,46 @@ class MapleStoryMonsterDetector:
             print(f"❌ 載入模板失敗: {e}")
             return False
 
+class UITemplateHelper:
+    def __init__(self, adb, cooldown_interval=0.7):
+        self.adb = adb
+        self.cooldown = {}
+        self.cooldown_interval = cooldown_interval
+
+    def detect_and_click(self, frame, template_path, label, color, key, now, threshold=0.7):
+        import os
+        import cv2
+        if key not in self.cooldown:
+            self.cooldown[key] = 0
+        if now - self.cooldown[key] > self.cooldown_interval:
+            if frame is not None and os.path.exists(template_path):
+                match = self.match_template(frame, template_path, threshold=threshold)
+                if match:
+                    x, y, w, h = match
+                    cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
+                    cv2.putText(frame, label, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                    if self.adb:
+                        self.adb.click_ui(x, y, w, h)
+                    self.cooldown[key] = now
+                    return True
+        return False
+
+    def match_template(self, frame, template_path, threshold=0.7):
+        import cv2
+        import numpy as np
+        template = cv2.imread(template_path, cv2.IMREAD_COLOR)
+        if template is None or frame is None:
+            return None
+        # 轉灰階
+        frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if len(frame.shape) == 3 else frame
+        template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY) if len(template.shape) == 3 else template
+        res = cv2.matchTemplate(frame_gray, template_gray, cv2.TM_CCOEFF_NORMED)
+        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+        if max_val >= threshold:
+            h, w = template_gray.shape[:2]
+            return (max_loc[0], max_loc[1], w, h)
+        return None
+
 # 創建並導出怪物檢測器實例
 monster_detector = MapleStoryMonsterDetector()
 print("✅ 怪物檢測器已初始化")

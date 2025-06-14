@@ -18,6 +18,9 @@ from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
 
+from modules.coordinate import TemplateMatcherTracker   # 已經在 ro_helper.tracker
+from includes.simple_template_utils import UITemplateHelper
+
 # 添加父目錄到 Python 路徑
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -186,6 +189,8 @@ class MonsterDetectionGUI(QMainWindow):
         print(f"✅ 怪物檢測器狀態: {'已初始化' if self.monster_detector else '未初始化'}")
         print(f"✅ 路徑系統狀態: {'已初始化' if self.waypoint_system else '未初始化'}")
         print("🔧 GUI初始化完成，戰鬥系統等待手動啟用")
+        
+        self.ui_helper = UITemplateHelper(adb=self.ro_helper.adb, cooldown_interval=0.7)
     
     def _create_gui(self):
         """建立完整GUI介面"""
@@ -869,164 +874,246 @@ class MonsterDetectionGUI(QMainWindow):
     def _opencv_display_loop(self):
         """OpenCV 即時顯示循環"""
         try:
-            window_name = "MapleStory Helper - 即時顯示"
+            window_name = "Maple Helper - 角色定位"
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            cv2.resizeWindow(window_name, 1280, 720)
+            
+            consecutive_failures = 0
+            max_failures = 5
             
             while self._opencv_display_running:
                 try:
-                    # 獲取當前畫面
+                    # 獲取最新畫面
                     frame = self.ro_helper.capturer.grab_frame()
                     if frame is None:
-                        time.sleep(0.1)
+                        consecutive_failures += 1
+                        if consecutive_failures >= max_failures:
+                            print("⚠️ 連續捕捉失敗次數過多，嘗試重新連接...")
+                            self.ro_helper.capturer.force_reconnect()
+                            consecutive_failures = 0
+                        time.sleep(0.2)  # 增加等待時間
                         continue
                     
-                    # 獲取小地圖位置
-                    minimap_rect = self.ro_helper.tracker.find_minimap()
+                    # 重置失敗計數
+                    consecutive_failures = 0
                     
-                    if minimap_rect is None:
-                        # 全畫面模式
-                        display_frame = self._draw_monsters_on_full_frame(frame)
-                    else:
-                        # 小地圖模式（完整可視化）
-                        display_frame = self._draw_complete_visualization(frame, minimap_rect)
-
+                    # 複製畫面以避免修改原始資料
+                    display_frame = frame.copy()
+                    
+                    # 執行血條檢測
+                    display_frame = self.locate_and_draw_health_bar(display_frame)
+                    
+                    # 繪製小地圖
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    minimap_rect = self.ro_helper.tracker._find_minimap_with_subpixel_accuracy(gray)
+                    if minimap_rect:
+                        display_frame = self._draw_minimap_visualization(display_frame, minimap_rect)
+                    
+                    # 顯示畫面
                     cv2.imshow(window_name, display_frame)
-                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                    
+                    # 控制顯示頻率
+                    key = cv2.waitKey(1)
+                    if key == 27:  # ESC 鍵
                         break
-                    time.sleep(0.033)  # 約30FPS
-
+                    
+                    # 控制更新頻率
+                    time.sleep(0.1)  # 降低到 10 FPS
+                    
                 except Exception as e:
-                    print(f"⚠️ 顯示循環單次異常: {e}")
-                    time.sleep(0.1)
-
+                    print(f"⚠️ 即時顯示錯誤: {e}")
+                    time.sleep(0.2)
+                    continue
+            
         except Exception as e:
             print(f"❌ 即時顯示循環錯誤: {e}")
         finally:
+            # 清理資源
             cv2.destroyAllWindows()
+            print("✅ 即時顯示已停止")
 
-    def _draw_complete_visualization(self, frame, minimap_rect):
-        """完整的可視化繪製 - 包含路徑規劃"""
-        x1, y1, x2, y2 = minimap_rect
-        display_frame = frame.copy()
-        
-        # 1. 繪製小地圖邊框
-        cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        cv2.putText(display_frame, "Minimap", (x1, y1-10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-        
-        # 2. 繪製路徑點
-        if hasattr(self.ro_helper, 'waypoint_system') and self.ro_helper.waypoint_system:
-            waypoints = self.ro_helper.waypoint_system.waypoints
-            for i, waypoint in enumerate(waypoints):
-                wp_rel_pos = waypoint['pos']
-                wp_x = int(x1 + wp_rel_pos[0] * (x2 - x1))
-                wp_y = int(y1 + wp_rel_pos[1] * (y2 - y1))
-                
-                # 繪製路徑點
-                cv2.circle(display_frame, (wp_x, wp_y), 6, (255, 255, 0), 2)
-                cv2.putText(display_frame, str(i), (wp_x + 8, wp_y),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
-
-        # 3. 繪製區域標記
-        if hasattr(self.ro_helper, 'waypoint_system') and self.ro_helper.waypoint_system.area_grid:
-            for pos_key, area_type in self.ro_helper.waypoint_system.area_grid.items():
-                try:
-                    if isinstance(pos_key, tuple):
-                        area_x, area_y = pos_key
-                    elif isinstance(pos_key, str) and ',' in pos_key:
-                        x_str, y_str = pos_key.split(',')
-                        area_x, area_y = float(x_str), float(y_str)
-                    else:
-                        continue
-
-                    # 轉換為螢幕座標
-                    screen_x = int(x1 + area_x * (x2 - x1))
-                    screen_y = int(y1 + area_y * (y2 - y1))
-
-                    # 根據區域類型選擇顏色
-                    if area_type == "walkable":
-                        color = (0, 255, 0)  # 綠色
-                        text = "W"
-                    elif area_type == "forbidden":
-                        color = (0, 0, 255)  # 紅色
-                        text = "F"
-                    elif area_type == "rope":
-                        color = (255, 165, 0)  # 橙色
-                        text = "R"
-                    else:
-                        color = (128, 128, 128)  # 灰色
-                        text = "?"
-
-                    # 繪製區域標記
-                    cv2.rectangle(display_frame, 
-                                (screen_x-3, screen_y-3), (screen_x+3, screen_y+3),
-                                color, -1)
-                    cv2.putText(display_frame, text, (screen_x-2, screen_y+2),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
-                except Exception:
-                    continue
-                    
-        # 4. ✅ 繪製A*路徑規劃（修正版）
+    def _draw_minimap_visualization(self, frame, minimap_rect):
+        """繪製小地圖可視化（包含小地圖內的角色標記）"""
         try:
-            if hasattr(self.ro_helper, 'auto_combat') and self.ro_helper.auto_combat:
-                auto_combat = self.ro_helper.auto_combat
-                
-                # 檢查是否有最近的路徑規劃結果
-                if hasattr(auto_combat, 'last_planned_path') and auto_combat.last_planned_path:
-                    path = auto_combat.last_planned_path
-                    print(f"🛣️ 繪製A*路徑: {len(path)} 個點")
-                    
-                    # 繪製路徑線段
-                    for i in range(len(path) - 1):
-                        start_rel = path[i]
-                        end_rel = path[i + 1]
-                        
-                        # 轉換為螢幕座標
-                        start_x = int(x1 + start_rel[0] * (x2 - x1))
-                        start_y = int(y1 + start_rel[1] * (y2 - y1))
-                        end_x = int(x1 + end_rel[0] * (x2 - x1))
-                        end_y = int(y1 + end_rel[1] * (y2 - y1))
-                        
-                        # 繪製路徑線（藍色）
-                        cv2.line(display_frame, (start_x, start_y), (end_x, end_y), 
-                                (255, 0, 0), 2)
-                        
-                        # 繪製方向箭頭
-                        cv2.arrowedLine(display_frame, (start_x, start_y), (end_x, end_y),
-                                       (255, 0, 0), 2, tipLength=0.3)
-                    
-                    # 繪製路徑點
-                    for i, path_point in enumerate(path):
-                        path_x = int(x1 + path_point[0] * (x2 - x1))
-                        path_y = int(y1 + path_point[1] * (y2 - y1))
-                        
-                        # 起點綠色，終點紅色，中間點藍色
-                        if i == 0:
-                            color = (0, 255, 0)  # 起點綠色
-                        elif i == len(path) - 1:
-                            color = (0, 0, 255)  # 終點紅色
-                        else:
-                            color = (255, 0, 0)  # 路徑點藍色
-                        
-                        cv2.circle(display_frame, (path_x, path_y), 4, color, -1)
-                        cv2.putText(display_frame, str(i), (path_x + 6, path_y),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.3, color, 1)
-                    
-                    # 顯示路徑資訊
-                    path_info = f"A* Path: {len(path)} points"
-                    cv2.putText(display_frame, path_info, (10, 30),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-                else:
-                    # 顯示無路徑資訊
-                    cv2.putText(display_frame, "No A* Path", (10, 30),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (128, 128, 128), 2)
+            x1, y1, x2, y2 = minimap_rect
+            # ✅ 繪製小地圖邊框
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(frame, "Minimap", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            # ✅ 在小地圖內繪製角色位置
+            rel_pos = self.ro_helper.tracker.track_player(frame)
+            if rel_pos:
+                minimap_player_x = int(x1 + rel_pos[0] * (x2 - x1))
+                minimap_player_y = int(y1 + rel_pos[1] * (y2 - y1))
+                cv2.circle(frame, (minimap_player_x, minimap_player_y), 4, (0, 0, 255), -1)
+                cv2.circle(frame, (minimap_player_x, minimap_player_y), 6, (255, 255, 255), 1)
+            # ✅ 繪製其他小地圖元素（路徑點、區域等）
+            if hasattr(self.ro_helper, 'waypoint_system') and self.ro_helper.waypoint_system:
+                try:
+                    self._draw_waypoints_on_minimap(frame, minimap_rect)
+                    self._draw_areas_on_minimap(frame, minimap_rect)
+                except Exception as e:
+                    print(f"❌ 小地圖可視化失敗: {e}")
+            return frame
         except Exception as e:
-            print(f"⚠️ A*路徑繪製失敗: {e}")
+            print(f"❌ 小地圖可視化失敗: {e}")
+            return frame
 
-        # 5. 繪製怪物檢測結果
-        display_frame = self._draw_monsters_on_frame(display_frame)
+    def _draw_waypoints_on_minimap(self, frame, minimap_rect):
+        """在小地圖上繪製路徑點"""
+        try:
+            x1, y1, x2, y2 = minimap_rect
+            waypoints = self.ro_helper.waypoint_system.waypoints
+            for i in range(len(waypoints) - 1):
+                wp1 = waypoints[i]
+                wp2 = waypoints[i + 1]
+                px1 = int(x1 + wp1['pos'][0] * (x2 - x1))
+                py1 = int(y1 + wp1['pos'][1] * (y2 - y1))
+                px2 = int(x1 + wp2['pos'][0] * (x2 - x1))
+                py2 = int(y1 + wp2['pos'][1] * (y2 - y1))
+                cv2.line(frame, (px1, py1), (px2, py2), (255, 0, 0), 2)
+                cv2.circle(frame, (px1, py1), 5, (0, 0, 255), -1)
+                cv2.circle(frame, (px1, py1), 7, (255, 255, 255), 1)
+                cv2.putText(frame, str(i), (px1 + 8, py1 + 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            if waypoints:
+                last_wp = waypoints[-1]
+                px = int(x1 + last_wp['pos'][0] * (x2 - x1))
+                py = int(y1 + last_wp['pos'][1] * (y2 - y1))
+                cv2.circle(frame, (px, py), 5, (0, 0, 255), -1)
+                cv2.circle(frame, (px, py), 7, (255, 255, 255), 1)
+                cv2.putText(frame, str(len(waypoints)-1), (px + 8, py + 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        except Exception as e:
+            print(f"❌ 路徑點繪製失敗: {e}")
 
-        return display_frame
+    def _draw_areas_on_minimap(self, frame, minimap_rect):
+        """在小地圖上繪製區域"""
+        try:
+            x1, y1, x2, y2 = minimap_rect
+            area_grid = self.ro_helper.waypoint_system.area_grid
+            area_colors = {
+                'walkable': (0, 255, 0, 128),
+                'forbidden': (0, 0, 255, 128),
+                'rope': (255, 255, 0, 128)
+            }
+            overlay = frame.copy()
+            for grid_key, area_type in area_grid.items():
+                try:
+                    rel_x, rel_y = map(float, grid_key.split(','))
+                    px = int(x1 + rel_x * (x2 - x1))
+                    py = int(y1 + rel_y * (y2 - y1))
+                    color = area_colors.get(area_type, (128, 128, 128, 128))
+                    cv2.circle(overlay, (px, py), 3, color[:3], -1)
+                except Exception as e:
+                    print(f"⚠️ 區域點繪製失敗: {e}")
+                    continue
+            cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
+        except Exception as e:
+            print(f"❌ 區域繪製失敗: {e}")
+
+    def locate_and_draw_health_bar(self, frame, templates_dir="templates/MainScreen"):
+        import cv2
+        import numpy as np
+        import os
+        import time
+        now = time.time()
+        try:
+            # 血條檢測
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            lower_red1 = np.array([0, 100, 100])
+            upper_red1 = np.array([10, 255, 255])
+            lower_red2 = np.array([160, 100, 100])
+            upper_red2 = np.array([180, 255, 255])
+            mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+            mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+            mask = cv2.bitwise_or(mask1, mask2)
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            health_bar_found = False
+            for cnt in contours:
+                x, y, w, h = cv2.boundingRect(cnt)
+                aspect_ratio = w / float(h)
+                if 82 <= w <= 86 and aspect_ratio > 4:
+                    cv2.rectangle(frame, (x, y), (x+w, y+h), (0,0,255), 2)
+                    cv2.putText(frame, "Health", (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
+                    health_bar_found = True
+                    break
+            if not health_bar_found:
+                ui_templates = getattr(self.ro_helper, 'config', {}).get('ui_templates', {})
+                menu_path = ui_templates.get('menu', os.path.join(templates_dir, "MenuUi.png"))
+                team_path = ui_templates.get('team', os.path.join(templates_dir, "TeamUi.png"))
+                newui_path = ui_templates.get('newui', os.path.join(templates_dir, "NewUi.png"))
+                closeui_path = ui_templates.get('closeui', os.path.join(templates_dir, "CloseUi.png"))
+                # 只抓一次 frame
+                ui_frame = self.ro_helper.adb.capturer.grab_frame()
+                self.ui_helper.detect_and_click(ui_frame, menu_path, "MenuUi", (255,255,0), 'menu', now)
+                self.ui_helper.detect_and_click(ui_frame, team_path, "TeamUi", (0,255,255), 'team', now)
+                if self.ui_helper.detect_and_click(ui_frame, newui_path, "NewUi", (0,255,0), 'newui', now):
+                    self.ui_helper.detect_and_click(ui_frame, closeui_path, "CloseUi", (255,0,255), 'closeui', now)
+            return frame
+        except Exception as e:
+            print(f"❌ 血條檢測失敗: {e}")
+            return frame
+
+    def _match_template(self, img, template_path, threshold=0.7):
+        """模板匹配輔助函數"""
+        try:
+            template = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
+            if template is None:
+                print(f"❌ 模板讀取失敗: {template_path}")
+                return None
+            img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            result = cv2.matchTemplate(img_gray, template, cv2.TM_CCOEFF_NORMED)
+            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+            if max_val >= threshold:
+                h, w = template.shape[:2]
+                return (max_loc[0], max_loc[1], w, h)
+            return None
+        except Exception as e:
+            print(f"❌ 模板匹配失敗: {e}")
+            return None
+
+    def debug_player_position_detailed(self, frame):
+        """詳細調試角色位置計算"""
+        try:
+            print("\n🔍 詳細角色位置調試:")
+            # 1. 檢查小地圖檢測
+            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            minimap_rect = self.ro_helper.tracker._find_minimap_with_subpixel_accuracy(gray_frame)
+            if minimap_rect:
+                x1, y1, x2, y2 = minimap_rect
+                print(f"📏 小地圖檢測成功: ({x1}, {y1}) -> ({x2}, {y2})")
+                print(f"📐 小地圖尺寸: {x2-x1} x {y2-y1}")
+                # 2. 檢查角色追蹤
+                rel_pos = self.ro_helper.tracker.track_player(frame)
+                if rel_pos:
+                    print(f"🎯 角色相對座標: ({rel_pos[0]:.6f}, {rel_pos[1]:.6f})")
+                    # 3. 計算主畫面位置
+                    minimap_img = frame[y1:y2, x1:x2]
+                    gray_minimap = cv2.cvtColor(minimap_img, cv2.COLOR_BGR2GRAY)
+                    result = cv2.matchTemplate(gray_minimap, self.ro_helper.tracker.player_template, cv2.TM_CCOEFF_NORMED)
+                    min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+                    if max_val >= self.ro_helper.tracker.player_threshold:
+                        px, py = max_loc
+                        h, w = self.ro_helper.tracker.player_template.shape
+                        center_x = px + w // 2
+                        center_y = py + h // 2
+                        # 轉換回主畫面座標
+                        main_x = x1 + center_x
+                        main_y = y1 + center_y
+                        print(f"📍 小地圖內角色位置: ({center_x}, {center_y})")
+                        print(f"📍 主畫面角色位置: ({main_x}, {main_y})")
+                        print(f"📊 模板匹配信心度: {max_val:.4f}")
+                        return (main_x, main_y)
+                    else:
+                        print(f"❌ 模板匹配失敗，信心度: {max_val:.4f} < {self.ro_helper.tracker.player_threshold}")
+                else:
+                    print("❌ 角色相對座標獲取失敗")
+            else:
+                print("❌ 小地圖檢測失敗")
+            return None
+        except Exception as e:
+            print(f"❌ 角色位置調試失敗: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
     def _toggle_auto_hunt(self, state):
         """切換自動狩獵狀態"""
@@ -1068,7 +1155,7 @@ class MonsterDetectionGUI(QMainWindow):
                     self.auto_hunt_enabled = True
                     self.auto_hunt_mode = "attack"
                     print("✅ 自動狩獵已開啟")
-                    print(f"🔍 戰鬥模式: {combat_mode}")
+                    print(f"🎯 戰鬥模式: {combat_mode}")
                     print(f"🔍 戰鬥系統狀態: is_enabled={self.ro_helper.auto_combat.is_enabled}")
                 else:
                     print("❌ 啟動戰鬥系統失敗")

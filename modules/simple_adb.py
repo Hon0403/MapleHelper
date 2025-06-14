@@ -1,12 +1,14 @@
 # modules/simple_adb.py - 純粹的角色操作邏輯
 
 import time
+import os
+import cv2
 from includes.adb_utils import ADBUtils
 
 class SimpleADB:
     """✅ 楓之谷專用角色操作控制器 - 專注於遊戲邏輯"""
     
-    def __init__(self):
+    def __init__(self, config=None):
         # ✅ 只保存設備ID，所有ADB操作都通過ADBUtils
         self.device_id = None
         self.is_connected = False
@@ -38,6 +40,10 @@ class SimpleADB:
         
         # 初始化連接
         self._init_connection()
+        
+        # 初始化畫面捕獲器
+        from modules.simple_capturer import SimpleCapturer
+        self.capturer = SimpleCapturer(config)
         
         print("🍁 楓之谷角色操作控制器已初始化")
 
@@ -225,3 +231,108 @@ class SimpleADB:
             'skill_keys_count': len(self.skill_keys),
             'combo_actions_count': len(self.combo_actions)
         }
+
+    def click_ui_sequence(self):
+        """依序點擊MenuUi->TeamUi->NewUi"""
+        if not self.is_connected:
+            print("❌ ADB未連接")
+            return False
+            
+        try:
+            # 獲取螢幕截圖
+            frame = self.capturer.grab_frame()
+            if frame is None:
+                print("❌ 無法獲取螢幕截圖")
+                return False
+                
+            # 定義模板路徑
+            templates_dir = "templates/MainScreen"
+            menu_path = os.path.join(templates_dir, "MenuUi.png")
+            team_path = os.path.join(templates_dir, "TeamUi.png")
+            newui_path = os.path.join(templates_dir, "NewUi.png")
+            
+            # 點擊MenuUi
+            print("🖱️ 尋找MenuUi...")
+            menu_loc = self._find_template_location(frame, menu_path)
+            if menu_loc:
+                x, y = menu_loc
+                print(f"✅ 找到MenuUi，點擊位置: ({x}, {y})")
+                ADBUtils.tap_screen(self.device_id, x, y)
+                time.sleep(1)
+            else:
+                print("❌ 未找到MenuUi")
+                return False
+                
+            # 更新螢幕截圖
+            frame = self.capturer.grab_frame()
+            if frame is None:
+                return False
+                
+            # 點擊TeamUi
+            print("🖱️ 尋找TeamUi...")
+            team_loc = self._find_template_location(frame, team_path)
+            if team_loc:
+                x, y = team_loc
+                print(f"✅ 找到TeamUi，點擊位置: ({x}, {y})")
+                ADBUtils.tap_screen(self.device_id, x, y)
+                time.sleep(1)
+            else:
+                print("❌ 未找到TeamUi")
+                return False
+                
+            # 更新螢幕截圖
+            frame = self.capturer.grab_frame()
+            if frame is None:
+                return False
+                
+            # 點擊NewUi
+            print("🖱️ 尋找NewUi...")
+            newui_loc = self._find_template_location(frame, newui_path)
+            if newui_loc:
+                x, y = newui_loc
+                print(f"✅ 找到NewUi，點擊位置: ({x}, {y})")
+                ADBUtils.tap_screen(self.device_id, x, y)
+                time.sleep(1)
+            else:
+                print("❌ 未找到NewUi")
+                return False
+                
+            print("✅ UI序列點擊完成")
+            return True
+            
+        except Exception as e:
+            print(f"❌ UI序列點擊失敗: {e}")
+            return False
+            
+    def _find_template_location(self, frame, template_path, threshold=0.7):
+        """使用模板匹配找到UI元素位置"""
+        try:
+            template = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
+            if template is None:
+                print(f"❌ 無法讀取模板: {template_path}")
+                return None
+                
+            frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            result = cv2.matchTemplate(frame_gray, template, cv2.TM_CCOEFF_NORMED)
+            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+            
+            if max_val >= threshold:
+                h, w = template.shape[:2]
+                center_x = max_loc[0] + w // 2
+                center_y = max_loc[1] + h // 2
+                return (center_x, center_y)
+            return None
+            
+        except Exception as e:
+            print(f"❌ 模板匹配失敗: {e}")
+            return None
+
+    def click_ui(self, x, y, w=None, h=None):
+        """直接點擊指定座標，可選寬高，會點擊中心點"""
+        if not self.is_connected:
+            print("❌ ADB未連接")
+            return False
+        cx = x + (w // 2 if w else 0)
+        cy = y + (h // 2 if h else 0)
+        print(f"🖱️ 點擊座標: ({cx}, {cy})")
+        return ADBUtils.tap_screen(self.device_id, int(cx), int(cy))

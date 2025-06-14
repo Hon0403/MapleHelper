@@ -13,6 +13,7 @@ from modules.coordinate import TemplateMatcherTracker
 from modules.auto_combat_simple import SimpleCombat
 from modules.waypoint_editor import WaypointEditor
 from modules.simple_waypoint_system import SimpleWaypointSystem
+from modules.simple_adb import SimpleADB
 
 
 class MapleStoryHelper:
@@ -21,8 +22,11 @@ class MapleStoryHelper:
     def __init__(self, config_path="configs/bluestacks.yaml"):
         print("🚀 啟動簡化版 MapleStory Helper...")
         
-        # 載入設定
+        # 先載入設定
         self.config = self._load_config(config_path)
+        
+        # 初始化 ADB 控制器，傳入 config
+        self.adb = SimpleADB(self.config)
         
         # 基本狀態
         self.is_enabled = False

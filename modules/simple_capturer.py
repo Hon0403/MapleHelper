@@ -23,7 +23,7 @@ class SimpleCapturer:
         
         # 快取上次捕捉時間
         self.last_capture_time = 0
-        self.min_capture_interval = 0.05  # 最小捕捉間隔（秒）
+        self.min_capture_interval = 0.2  # 增加最小捕捉間隔到 0.2 秒（5 FPS）
         
         # 初始化ADB連接
         self._init_adb_connection()
@@ -70,60 +70,178 @@ class SimpleCapturer:
             return frame
     
     def _capture_via_traditional_adb(self):
-        """✅ 改進版：優化捕捉流程"""
-        try:
-            temp_path = "/sdcard/screenshot.png"
-            local_path = "temp_screenshot.png"
+        """✅ 穩定版：增加錯誤處理和重試機制"""
+        max_retries = 3
+        retry_delay = 0.8  # 增加重試延遲時間到 0.8 秒
+        
+        for attempt in range(max_retries):
+            try:
+                # 生成唯一的檔案名稱
+                timestamp = int(time.time() * 1000)
+                temp_path = f"/sdcard/screenshot_{timestamp}.png"
+                local_path = f"temp_screenshot_{timestamp}.png"
+                
+                # 1. 準備環境
+                if not self._prepare_capture_environment():
+                    print(f"⚠️ 準備環境失敗 (嘗試 {attempt + 1}/{max_retries})")
+                    time.sleep(retry_delay)
+                    continue
+                
+                # 2. 執行截圖
+                if not self._execute_screenshot(temp_path):
+                    print(f"⚠️ 執行截圖失敗 (嘗試 {attempt + 1}/{max_retries})")
+                    time.sleep(retry_delay)
+                    continue
+                
+                # 3. 拉取檔案
+                if not self._pull_screenshot(temp_path, local_path):
+                    print(f"⚠️ 拉取檔案失敗 (嘗試 {attempt + 1}/{max_retries})")
+                    time.sleep(retry_delay)
+                    continue
+                
+                # 4. 讀取圖片
+                img = self._safe_imread(local_path)
+                if img is not None:
+                    # 清理檔案
+                    self._cleanup_files_sync(temp_path, local_path)
+                    return img
+                else:
+                    print(f"⚠️ 圖片讀取失敗 (嘗試 {attempt + 1}/{max_retries})")
+                
+            except Exception as e:
+                print(f"⚠️ 截圖過程異常 (嘗試 {attempt + 1}/{max_retries}): {e}")
+            
+            # 失敗後等待一下再重試
+            time.sleep(retry_delay)
+        
+        print("❌ 所有截圖嘗試都失敗了")
+        return None
 
-            # 1. 截圖（使用更短的超時時間）
-            success, stdout, stderr = ADBUtils.execute_command(
+    def _prepare_capture_environment(self):
+        """準備截圖環境"""
+        try:
+            # 1. 確保設備端目錄存在
+            success, _, stderr = ADBUtils.execute_command(
+                self.adb_path, self.device_id,
+                ['shell', 'mkdir', '-p', '/sdcard'],
+                timeout=2
+            )
+            if not success:
+                print(f"⚠️ 創建目錄失敗: {stderr}")
+                return False
+            
+            # 2. 清理舊檔案
+            success, _, stderr = ADBUtils.execute_command(
+                self.adb_path, self.device_id,
+                ['shell', 'rm', '-f', '/sdcard/screenshot_*.png'],
+                timeout=2
+            )
+            if not success:
+                print(f"⚠️ 清理舊檔案失敗: {stderr}")
+                return False
+            
+            return True
+        except Exception as e:
+            print(f"❌ 準備環境失敗: {e}")
+            return False
+
+    def _execute_screenshot(self, temp_path):
+        """執行截圖操作"""
+        try:
+            # 1. 執行截圖
+            success, _, stderr = ADBUtils.execute_command(
                 self.adb_path, self.device_id,
                 ['shell', 'screencap', '-p', temp_path],
-                timeout=1  # 減少超時時間
+                timeout=8  # 增加超時時間到 8 秒
             )
-
             if not success:
-                if "device not found" in stderr or "device offline" in stderr:
-                    self._init_adb_connection()
-                return None
-
-            # 2. 拉取檔案（使用更短的超時時間）
+                print(f"⚠️ 截圖失敗: {stderr}")
+                return False
+            
+            # 2. 等待檔案完全寫入
+            time.sleep(0.3)  # 增加等待時間到 0.3 秒
+            
+            # 3. 檢查檔案是否存在
             success, stdout, stderr = ADBUtils.execute_command(
                 self.adb_path, self.device_id,
-                ['pull', temp_path, local_path],
-                timeout=1  # 減少超時時間
+                ['shell', 'ls', '-l', temp_path],
+                timeout=3  # 增加超時時間到 3 秒
             )
-
-            if not success:
-                return None
-
-            # 3. 讀取圖片
-            if os.path.exists(local_path):
-                img = cv2.imread(local_path)
-                
-                # 清理檔案（異步執行）
-                threading.Thread(
-                    target=self._cleanup_files,
-                    args=(temp_path, local_path),
-                    daemon=True
-                ).start()
-
-                return img
-
-            return None
-
+            if not success or 'No such file' in stderr:
+                print(f"⚠️ 截圖檔案不存在")
+                return False
+            
+            return True
         except Exception as e:
-            return None
-    
-    def _cleanup_files(self, temp_path, local_path):
-        """✅ 異步清理檔案"""
+            print(f"❌ 執行截圖失敗: {e}")
+            return False
+
+    def _pull_screenshot(self, temp_path, local_path):
+        """拉取截圖檔案"""
         try:
+            # 1. 拉取檔案
+            success, _, stderr = ADBUtils.execute_command(
+                self.adb_path, self.device_id,
+                ['pull', temp_path, local_path],
+                timeout=5
+            )
+            if not success:
+                print(f"⚠️ 檔案拉取失敗: {stderr}")
+                return False
+            
+            # 2. 檢查本地檔案
+            if not os.path.exists(local_path):
+                print(f"⚠️ 本地檔案不存在")
+                return False
+            
+            # 3. 檢查檔案大小
+            file_size = os.path.getsize(local_path)
+            if file_size < 1000:  # 檔案太小可能損壞
+                print(f"⚠️ 檔案大小異常: {file_size} bytes")
+                os.remove(local_path)
+                return False
+            
+            return True
+        except Exception as e:
+            print(f"❌ 拉取截圖失敗: {e}")
+            return False
+
+    def _safe_imread(self, image_path):
+        """安全的圖片讀取方法"""
+        try:
+            # 方法1：使用OpenCV讀取
+            img = cv2.imread(image_path)
+            if img is not None and img.size > 0:
+                return img
+            
+            # 方法2：使用numpy和PIL
+            from PIL import Image
+            pil_img = Image.open(image_path)
+            img_array = np.array(pil_img)
+            if len(img_array.shape) == 3 and img_array.size > 0:
+                return cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+            
+            return None
+        except Exception as e:
+            print(f"❌ 圖片讀取錯誤: {e}")
+            return None
+
+    def _cleanup_files_sync(self, temp_path, local_path):
+        """同步清理檔案"""
+        try:
+            # 清理設備端檔案
             ADBUtils.execute_command(
                 self.adb_path, self.device_id,
-                ['shell', 'rm', temp_path]
+                ['shell', 'rm', '-f', temp_path],
+                timeout=2
             )
+            
+            # 清理本地檔案
             if os.path.exists(local_path):
-                os.remove(local_path)
+                try:
+                    os.remove(local_path)
+                except:
+                    pass
         except:
             pass
     
