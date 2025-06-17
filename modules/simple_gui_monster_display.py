@@ -874,7 +874,11 @@ class MonsterDetectionGUI(QMainWindow):
     def _opencv_display_loop(self):
         """OpenCV 即時顯示循環"""
         try:
+<<<<<<< HEAD
             window_name = "Maple Helper - 怪物檢測"
+=======
+            window_name = "Maple Helper - 角色定位"
+>>>>>>> 0ff736d04a6e034a0b49bbf5875afbe4eecd9665
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
             cv2.resizeWindow(window_name, 1280, 720)
             
@@ -903,8 +907,14 @@ class MonsterDetectionGUI(QMainWindow):
                     # 執行血條檢測
                     display_frame = self.locate_and_draw_health_bar(display_frame)
                     
+<<<<<<< HEAD
                     # 繪製小地圖（使用 tracker 的灰階圖）
                     minimap_rect = self.ro_helper.tracker._find_minimap_with_subpixel_accuracy(frame)
+=======
+                    # 繪製小地圖
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    minimap_rect = self.ro_helper.tracker._find_minimap_with_subpixel_accuracy(gray)
+>>>>>>> 0ff736d04a6e034a0b49bbf5875afbe4eecd9665
                     if minimap_rect:
                         display_frame = self._draw_minimap_visualization(display_frame, minimap_rect)
                     
@@ -932,13 +942,27 @@ class MonsterDetectionGUI(QMainWindow):
             print("✅ 即時顯示已停止")
 
     def _draw_minimap_visualization(self, frame, minimap_rect):
+<<<<<<< HEAD
         """繪製小地圖可視化（移除角色位置顯示）"""
+=======
+        """繪製小地圖可視化（包含小地圖內的角色標記）"""
+>>>>>>> 0ff736d04a6e034a0b49bbf5875afbe4eecd9665
         try:
             x1, y1, x2, y2 = minimap_rect
             # ✅ 繪製小地圖邊框
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cv2.putText(frame, "Minimap", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+<<<<<<< HEAD
             
+=======
+            # ✅ 在小地圖內繪製角色位置
+            rel_pos = self.ro_helper.tracker.track_player(frame)
+            if rel_pos:
+                minimap_player_x = int(x1 + rel_pos[0] * (x2 - x1))
+                minimap_player_y = int(y1 + rel_pos[1] * (y2 - y1))
+                cv2.circle(frame, (minimap_player_x, minimap_player_y), 4, (0, 0, 255), -1)
+                cv2.circle(frame, (minimap_player_x, minimap_player_y), 6, (255, 255, 255), 1)
+>>>>>>> 0ff736d04a6e034a0b49bbf5875afbe4eecd9665
             # ✅ 繪製其他小地圖元素（路徑點、區域等）
             if hasattr(self.ro_helper, 'waypoint_system') and self.ro_helper.waypoint_system:
                 try:
@@ -1003,6 +1027,7 @@ class MonsterDetectionGUI(QMainWindow):
             print(f"❌ 區域繪製失敗: {e}")
 
     def locate_and_draw_health_bar(self, frame, templates_dir="templates/MainScreen"):
+<<<<<<< HEAD
         if frame is None or frame.size == 0:
             return frame
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
@@ -1028,6 +1053,49 @@ class MonsterDetectionGUI(QMainWindow):
             cv2.rectangle(frame, (x, y), (x+w, y+h), (0,255,0), 2)
             cv2.putText(frame, 'HealthBar', (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
         return frame
+=======
+        import cv2
+        import numpy as np
+        import os
+        import time
+        now = time.time()
+        try:
+            # 血條檢測
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            lower_red1 = np.array([0, 100, 100])
+            upper_red1 = np.array([10, 255, 255])
+            lower_red2 = np.array([160, 100, 100])
+            upper_red2 = np.array([180, 255, 255])
+            mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+            mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+            mask = cv2.bitwise_or(mask1, mask2)
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            health_bar_found = False
+            for cnt in contours:
+                x, y, w, h = cv2.boundingRect(cnt)
+                aspect_ratio = w / float(h)
+                if 82 <= w <= 86 and aspect_ratio > 4:
+                    cv2.rectangle(frame, (x, y), (x+w, y+h), (0,0,255), 2)
+                    cv2.putText(frame, "Health", (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
+                    health_bar_found = True
+                    break
+            if not health_bar_found:
+                ui_templates = getattr(self.ro_helper, 'config', {}).get('ui_templates', {})
+                menu_path = ui_templates.get('menu', os.path.join(templates_dir, "MenuUi.png"))
+                team_path = ui_templates.get('team', os.path.join(templates_dir, "TeamUi.png"))
+                newui_path = ui_templates.get('newui', os.path.join(templates_dir, "NewUi.png"))
+                closeui_path = ui_templates.get('closeui', os.path.join(templates_dir, "CloseUi.png"))
+                # 只抓一次 frame
+                ui_frame = self.ro_helper.adb.capturer.grab_frame()
+                self.ui_helper.detect_and_click(ui_frame, menu_path, "MenuUi", (255,255,0), 'menu', now)
+                self.ui_helper.detect_and_click(ui_frame, team_path, "TeamUi", (0,255,255), 'team', now)
+                if self.ui_helper.detect_and_click(ui_frame, newui_path, "NewUi", (0,255,0), 'newui', now):
+                    self.ui_helper.detect_and_click(ui_frame, closeui_path, "CloseUi", (255,0,255), 'closeui', now)
+            return frame
+        except Exception as e:
+            print(f"❌ 血條檢測失敗: {e}")
+            return frame
+>>>>>>> 0ff736d04a6e034a0b49bbf5875afbe4eecd9665
 
     def _match_template(self, img, template_path, threshold=0.7):
         """模板匹配輔助函數"""
@@ -1047,6 +1115,54 @@ class MonsterDetectionGUI(QMainWindow):
             print(f"❌ 模板匹配失敗: {e}")
             return None
 
+<<<<<<< HEAD
+=======
+    def debug_player_position_detailed(self, frame):
+        """詳細調試角色位置計算"""
+        try:
+            print("\n🔍 詳細角色位置調試:")
+            # 1. 檢查小地圖檢測
+            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            minimap_rect = self.ro_helper.tracker._find_minimap_with_subpixel_accuracy(gray_frame)
+            if minimap_rect:
+                x1, y1, x2, y2 = minimap_rect
+                print(f"📏 小地圖檢測成功: ({x1}, {y1}) -> ({x2}, {y2})")
+                print(f"📐 小地圖尺寸: {x2-x1} x {y2-y1}")
+                # 2. 檢查角色追蹤
+                rel_pos = self.ro_helper.tracker.track_player(frame)
+                if rel_pos:
+                    print(f"🎯 角色相對座標: ({rel_pos[0]:.6f}, {rel_pos[1]:.6f})")
+                    # 3. 計算主畫面位置
+                    minimap_img = frame[y1:y2, x1:x2]
+                    gray_minimap = cv2.cvtColor(minimap_img, cv2.COLOR_BGR2GRAY)
+                    result = cv2.matchTemplate(gray_minimap, self.ro_helper.tracker.player_template, cv2.TM_CCOEFF_NORMED)
+                    min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+                    if max_val >= self.ro_helper.tracker.player_threshold:
+                        px, py = max_loc
+                        h, w = self.ro_helper.tracker.player_template.shape
+                        center_x = px + w // 2
+                        center_y = py + h // 2
+                        # 轉換回主畫面座標
+                        main_x = x1 + center_x
+                        main_y = y1 + center_y
+                        print(f"📍 小地圖內角色位置: ({center_x}, {center_y})")
+                        print(f"📍 主畫面角色位置: ({main_x}, {main_y})")
+                        print(f"📊 模板匹配信心度: {max_val:.4f}")
+                        return (main_x, main_y)
+                    else:
+                        print(f"❌ 模板匹配失敗，信心度: {max_val:.4f} < {self.ro_helper.tracker.player_threshold}")
+                else:
+                    print("❌ 角色相對座標獲取失敗")
+            else:
+                print("❌ 小地圖檢測失敗")
+            return None
+        except Exception as e:
+            print(f"❌ 角色位置調試失敗: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+>>>>>>> 0ff736d04a6e034a0b49bbf5875afbe4eecd9665
     def _toggle_auto_hunt(self, state):
         """切換自動狩獵狀態"""
         try:

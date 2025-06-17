@@ -132,6 +132,7 @@ class TemplateMatcherTracker:
                 peak_x < correlation_map.shape[1] - 1 and 
                 peak_y < correlation_map.shape[0] - 1)
 
+<<<<<<< HEAD
     def _find_minimap_with_subpixel_accuracy(self, frame):
         """✅ 亞像素精度小地圖檢測"""
         # 只在需要時轉換灰階
@@ -140,6 +141,10 @@ class TemplateMatcherTracker:
         else:
             gray_frame = frame
             
+=======
+    def _find_minimap_with_subpixel_accuracy(self, gray_frame):
+        """✅ 亞像素精度小地圖檢測"""
+>>>>>>> 0ff736d04a6e034a0b49bbf5875afbe4eecd9665
         locs = {}
         corners_found = 0
         
@@ -263,7 +268,12 @@ class TemplateMatcherTracker:
                 return False
                 
             # 使用高精度小地圖檢測
+<<<<<<< HEAD
             minimap_rect = self._find_minimap_with_subpixel_accuracy(frame)
+=======
+            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            minimap_rect = self._find_minimap_with_subpixel_accuracy(gray_frame)
+>>>>>>> 0ff736d04a6e034a0b49bbf5875afbe4eecd9665
             
             if minimap_rect:
                 x1, y1, x2, y2 = minimap_rect
