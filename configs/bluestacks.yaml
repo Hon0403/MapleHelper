@@ -1,0 +1,28 @@
+# configs/bluestacks.yaml (需用UTF-8編碼保存)
+capturer:
+  window:
+    title: "BlueStacks App Player"
+  capture_region: [0, 0, 1920, 1080]
+
+template_matcher:
+  corner_templates:
+    topleft: "minimap/topleft.png"
+    topright: "minimap/topright.png"
+    bottomleft: "minimap/bottom_left.png"
+    bottomright: "minimap/bottom_right.png"
+  player_template_name: "minimap/player_marker.png"
+  player_threshold: 0.65          # 可以適當降低閾值，因為顏色過濾後干擾減少
+  smooth_factor: 0.8
+  # --- 新增 HSV 過濾配置 ---
+  use_hsv_filter: true          # 啟用 HSV 過濾
+  # 黃色的 HSV 範圍 (H: 色調, S: 飽和度, V: 亮度)
+  # 需要根據你遊戲中實際的黃色調整！
+  hsv_yellow_lower: [20, 100, 100] # H: 20-35 通常是黃色
+  hsv_yellow_upper: [35, 255, 255] # S和V可以設高一點以排除淺色/暗色干擾
+
+ui_templates:
+  menu: "templates/MainScreen/MenuUi.png"
+  team: "templates/MainScreen/TeamUi.png"
+  newui: "templates/MainScreen/NewUi.png"
+  health: "templates/MainScreen/Health.png"
+  closeui: "templates/MainScreen/CloseUi.png"
