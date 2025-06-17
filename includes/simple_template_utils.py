@@ -141,17 +141,8 @@ class MapleStoryMonsterDetector:
         else:
             template_bgr = template_img
 
-<<<<<<< HEAD
         # ✅ 直接使用高級灰階轉換
         template_gray = self._advanced_grayscale_conversion(template_bgr)
-=======
-        # ✅ 使用高級灰階轉換
-        if len(template_bgr.shape) == 3:
-            # ✅ 直接使用高級灰階轉換
-            template_gray = self._advanced_grayscale_conversion(template_bgr)
-        else:
-            template_gray = template_bgr
->>>>>>> 0ff736d04a6e034a0b49bbf5875afbe4eecd9665
 
         # 提取特徵
         kp, des = self.detector.detectAndCompute(template_gray, None)
@@ -179,15 +170,11 @@ class MapleStoryMonsterDetector:
         if game_frame is None:
             return []
         
-<<<<<<< HEAD
         # ✅ 檢查是否已經是灰階圖像
         if len(game_frame.shape) == 2:
             scene_gray = game_frame
         else:
             scene_gray = self._advanced_grayscale_conversion(game_frame)
-=======
-        scene_gray = self._advanced_grayscale_conversion(game_frame)
->>>>>>> 0ff736d04a6e034a0b49bbf5875afbe4eecd9665
         
         # 特徵檢測
         scene_kp, scene_des = self.detector.detectAndCompute(scene_gray, None)

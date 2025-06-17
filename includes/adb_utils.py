@@ -32,7 +32,6 @@ class ADBUtils:
             else:
                 main_dir = os.getcwd()
 
-<<<<<<< HEAD
             main_dir_adb = os.path.join(main_dir, "adb.exe")
             
             if os.path.exists(main_dir_adb):
@@ -41,26 +40,12 @@ class ADBUtils:
                 return main_dir_adb
             else:
                 print(f"❌ adb.exe不存在: {main_dir_adb}")
-=======
-            main_dir_adb = os.path.join(main_dir, "HD-Adb.exe")
-            
-            if os.path.exists(main_dir_adb):
-                print(f"✅ 找到HD-Adb.exe: {main_dir_adb}")
-                ADBUtils._adb_path = main_dir_adb
-                return main_dir_adb
-            else:
-                print(f"❌ HD-Adb.exe不存在: {main_dir_adb}")
->>>>>>> 0ff736d04a6e034a0b49bbf5875afbe4eecd9665
                 ADBUtils._adb_path = main_dir_adb
                 return main_dir_adb
 
         except Exception as e:
             print(f"❌ 獲取ADB路徑失敗: {e}")
-<<<<<<< HEAD
             fallback_path = os.path.join(os.getcwd(), "adb.exe")
-=======
-            fallback_path = os.path.join(os.getcwd(), "HD-Adb.exe")
->>>>>>> 0ff736d04a6e034a0b49bbf5875afbe4eecd9665
             ADBUtils._adb_path = fallback_path
             return fallback_path
 
@@ -72,11 +57,7 @@ class ADBUtils:
             adb_path = ADBUtils.get_adb_path()
 
         if not os.path.exists(adb_path):
-<<<<<<< HEAD
             return False, "", f"adb.exe不存在: {adb_path}"
-=======
-            return False, "", f"HD-Adb.exe不存在: {adb_path}"
->>>>>>> 0ff736d04a6e034a0b49bbf5875afbe4eecd9665
 
         try:
             if device_id:
@@ -91,11 +72,7 @@ class ADBUtils:
         except subprocess.TimeoutExpired:
             return False, "", "命令超時"
         except FileNotFoundError:
-<<<<<<< HEAD
             return False, "", f"adb.exe不存在或無法執行: {adb_path}"
-=======
-            return False, "", f"HD-Adb.exe不存在或無法執行: {adb_path}"
->>>>>>> 0ff736d04a6e034a0b49bbf5875afbe4eecd9665
         except Exception as e:
             return False, "", str(e)
 
@@ -118,11 +95,7 @@ class ADBUtils:
         adb_path = ADBUtils.get_adb_path()
         
         if not os.path.exists(adb_path):
-<<<<<<< HEAD
             print(f"❌ adb.exe不存在: {adb_path}")
-=======
-            print(f"❌ HD-Adb.exe不存在: {adb_path}")
->>>>>>> 0ff736d04a6e034a0b49bbf5875afbe4eecd9665
             return None
 
         try:
@@ -173,11 +146,7 @@ class ADBUtils:
         """✅ 統一的BlueStacks連接管理"""
         adb_path = ADBUtils.get_adb_path()
         if not os.path.exists(adb_path):
-<<<<<<< HEAD
             print(f"❌ adb.exe不存在: {adb_path}")
-=======
-            print(f"❌ HD-Adb.exe不存在: {adb_path}")
->>>>>>> 0ff736d04a6e034a0b49bbf5875afbe4eecd9665
             return None
 
         current_time = time.time()
@@ -214,11 +183,7 @@ class ADBUtils:
         """✅ 確保ADB連接可用"""
         adb_path = ADBUtils.get_adb_path()
         if not os.path.exists(adb_path):
-<<<<<<< HEAD
             print(f"❌ adb.exe不存在: {adb_path}")
-=======
-            print(f"❌ HD-Adb.exe不存在: {adb_path}")
->>>>>>> 0ff736d04a6e034a0b49bbf5875afbe4eecd9665
             return None
 
         # 嘗試連接
@@ -241,11 +206,7 @@ class ADBUtils:
         adb_path = ADBUtils.get_adb_path()
         
         if not os.path.exists(adb_path):
-<<<<<<< HEAD
             print(f"❌ adb.exe不存在: {adb_path}")
-=======
-            print(f"❌ HD-Adb.exe不存在: {adb_path}")
->>>>>>> 0ff736d04a6e034a0b49bbf5875afbe4eecd9665
             return False
 
         try:
