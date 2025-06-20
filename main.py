@@ -14,6 +14,7 @@ from modules.auto_combat_simple import SimpleCombat
 from modules.waypoint_editor import WaypointEditor
 from modules.simple_waypoint_system import SimpleWaypointSystem
 from modules.simple_adb import SimpleADB
+from modules.health_mana_detector import HealthManaDetector
 
 
 class MapleStoryHelper:
@@ -35,6 +36,11 @@ class MapleStoryHelper:
         # 怪物檢測器
         from includes.simple_template_utils import monster_detector
         self.monster_detector = monster_detector
+        
+        # 血條檢測器
+        self.health_detector = HealthManaDetector()
+        self.last_health_check = 0
+        self.health_check_interval = 0.5  # 每0.5秒檢查一次
         
         # ✅ 添加路徑點系統
         self.waypoint_system = SimpleWaypointSystem()
@@ -198,46 +204,46 @@ class MapleStoryHelper:
         
         while self._running:
             try:
-                frame_count += 1
-                
-                # 1. 捕獲完整畫面
+                # 獲取當前幀
                 frame = self.capturer.grab_frame()
                 if frame is None:
-                    time.sleep(0.1)
                     continue
-
-                # 2. 角色追蹤
+                    
+                current_time = time.time()
+                
+                # 檢測血條和魔力條 - 已註解，目前不使用
+                # if current_time - self.last_health_check >= self.health_check_interval:
+                #     health_info = self.health_detector.detect_health_mana(frame)
+                #     if health_info['success']:
+                #         hp = health_info.get('hp_percentage', 0)
+                #         mp = health_info.get('mp_percentage', 0)
+                #         print(f"❤️ HP: {hp:.1f}% | 💙 MP: {mp:.1f}%")
+                #     else:
+                #         print("❌ 血魔檢測失敗")
+                #     self.last_health_check = current_time
+                
+                # 更新角色位置
                 rel_pos = None
                 if self.is_enabled:
                     rel_pos = self.tracker.track_player(frame)
-
-                # Debug print: 主循環與戰鬥系統狀態
-                print(f"主循環 is_enabled={self.is_enabled}, auto_combat.is_enabled={self.auto_combat.is_enabled}, rel_pos={rel_pos}")
-
-                # 3. ✅ 戰鬥系統更新（添加錯誤處理）
-                if self.auto_combat.is_enabled:
-                    try:
-                        self.auto_combat.update(rel_pos, frame)
-                    except Exception as e:
-                        print(f"⚠️ 戰鬥系統更新失敗: {e}")
-
-                # ✅ 4. FPS 統計
-                current_time = time.time()
-                if current_time - last_fps_time >= 10.0:  # 每10秒顯示一次FPS
+                
+                # 更新戰鬥系統
+                if self.auto_combat and self.auto_combat.is_enabled:
+                    self.auto_combat.update(rel_pos, frame)
+                
+                # 計算FPS
+                frame_count += 1
+                if current_time - last_fps_time >= 1.0:
                     fps = frame_count / (current_time - last_fps_time)
-                    print(f"📊 FPS: {fps:.1f}")
                     frame_count = 0
                     last_fps_time = current_time
-
-                # 5. 控制頻率
-                time.sleep(0.05)
                 
-            except KeyboardInterrupt:
-                print("⏹️ 接收到停止信號")
-                break
+                # 控制循環速度
+                time.sleep(0.01)
+                
             except Exception as e:
                 print(f"❌ 主循環錯誤: {e}")
-                time.sleep(1.0)
+                time.sleep(0.1)
         
         print("⏹️ 主循環已停止")
     

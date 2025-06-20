@@ -9,16 +9,23 @@ import os
 from includes.adb_utils import ADBUtils  # ✅ 使用統一ADB工具
 import io
 from PIL import Image
+import queue
 
 class SimpleCapturer:
     """✅ 改進版捕捉器 - 優化捕捉頻率"""
     
-    def __init__(self, config):
-        self.config = config
+    def __init__(self, config=None):
+        # 設置默認配置
+        self.config = config or {}
+        self.adb_path = self.config.get('adb_path', 'adb')
+        self.device_id = self.config.get('device_id', '')
         
-        # ✅ 不再硬編碼ADB路徑，使用adb_utils.py統一管理
-        self.adb_path = None
-        self.device_id = None
+        # ✅ 新增：效能優化相關
+        self.frame_cache = None
+        self.cache_timestamp = 0
+        self.cache_duration = 0.5  # 提高到 500ms
+        self.frame_queue = queue.Queue(maxsize=2)
+        self.result_queue = queue.Queue(maxsize=5)
         
         # 線程鎖
         self.capture_lock = threading.Lock()
@@ -29,6 +36,10 @@ class SimpleCapturer:
         
         # 初始化ADB連接
         self._init_adb_connection()
+        
+        # 啟動異步截圖
+        if self.is_connected:
+            self._start_async_capture()
     
     def _init_adb_connection(self):
         """✅ 使用adb_utils.py的統一連接管理"""
@@ -38,8 +49,6 @@ class SimpleCapturer:
             self.is_connected = True
             # 獲取實際使用的ADB路徑
             self.adb_path = ADBUtils.get_adb_path()
-            print(f"✅ ADB連接成功: {self.device_id}")
-            print(f"📍 使用ADB路徑: {self.adb_path}")
         else:
             self.is_connected = False
             print("❌ ADB連接失敗")
@@ -48,28 +57,88 @@ class SimpleCapturer:
             connection_info = ADBUtils.get_connection_info()
             print(f"📊 連接狀態: {connection_info}")
     
+    def _start_async_capture(self):
+        """啟動異步截圖"""
+        self.capture_thread = threading.Thread(
+            target=self._async_capture_worker,
+            daemon=True
+        )
+        self.capture_thread.start()
+    
+    def _async_capture_worker(self):
+        """異步截圖工作執行緒"""
+        while True:
+            try:
+                # 檢查是否需要更新緩存
+                current_time = time.time()
+                if (self.frame_cache is None or 
+                    current_time - self.cache_timestamp >= self.cache_duration):
+                    
+                    # 使用 exec-out 避免臨時文件
+                    result = subprocess.run([
+                        self.adb_path, '-s', self.device_id, 
+                        'exec-out', 'screencap', '-p'
+                    ], capture_output=True, timeout=3)
+                    
+                    if result.returncode == 0:
+                        # 直接使用 numpy 讀取圖片數據
+                        image_data = np.frombuffer(result.stdout, dtype=np.uint8)
+                        frame = cv2.imdecode(image_data, cv2.IMREAD_COLOR)
+                        
+                        if frame is not None:
+                            # 保持 BGR 格式，不進行顏色轉換
+                            # 因為血條檢測需要 BGR 格式
+                            self.frame_cache = frame
+                            self.cache_timestamp = current_time
+                            
+                            # 放入結果佇列
+                            try:
+                                self.result_queue.put(frame, block=False)
+                            except queue.Full:
+                                pass
+                
+                time.sleep(0.05)  # 控制截圖頻率
+                
+            except Exception as e:
+                print(f"❌ 異步截圖失敗: {e}")
+                time.sleep(0.1)
+    
     def grab_frame(self):
-        """✅ 改進版：優化捕捉頻率"""
-        if not self.is_connected:
-            # 嘗試重新建立連接
-            print("🔄 嘗試重新建立ADB連接...")
-            self._init_adb_connection()
+        """✅ 優化版：使用緩存和異步處理"""
+        try:
+            # 檢查緩存
+            current_time = time.time()
+            if (self.frame_cache is not None and 
+                current_time - self.cache_timestamp < self.cache_duration):
+                return self.frame_cache
             
-            if not self.is_connected:
-                print("❌ ADB未連接，無法捕捉畫面")
-                return None
-        
-        # 檢查捕捉間隔
-        current_time = time.time()
-        if current_time - self.last_capture_time < self.min_capture_interval:
+            # 從結果佇列獲取最新幀
+            try:
+                frame = self.result_queue.get_nowait()
+                self.frame_cache = frame
+                self.cache_timestamp = current_time
+                return frame
+            except queue.Empty:
+                return self.frame_cache
+            
+        except Exception as e:
+            print(f"❌ 獲取畫面失敗: {e}")
             return None
-        
-        # 線程安全保護
-        with self.capture_lock:
-            frame = self._capture_via_traditional_adb()
-            if frame is not None:
-                self.last_capture_time = current_time
-            return frame
+    
+    def _cleanup(self):
+        """清理資源"""
+        try:
+            # 清空佇列
+            while not self.frame_queue.empty():
+                self.frame_queue.get_nowait()
+            while not self.result_queue.empty():
+                self.result_queue.get_nowait()
+            
+            # 清理緩存
+            self.frame_cache = None
+            
+        except Exception as e:
+            print(f"❌ 清理資源失敗: {e}")
     
     def _capture_via_traditional_adb(self):
         """穩定版：使用臨時文件進行截圖"""

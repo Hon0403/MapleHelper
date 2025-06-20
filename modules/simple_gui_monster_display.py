@@ -128,6 +128,9 @@ class MonsterDetectionGUI(QMainWindow):
         self.max_chase_distance = 0.15
         self.return_to_safe = True
         
+        # 初始化血條檢測器
+        self._initialize_health_detector()
+        
         # 確保 monster_detector 被正確初始化
         if not hasattr(ro_helper, 'monster_detector'):
             from includes.simple_template_utils import monster_detector
@@ -170,6 +173,15 @@ class MonsterDetectionGUI(QMainWindow):
         self._frame_queue = None
         self._result_queue = None
         
+        # ✅ 新增：效能優化相關
+        self.gui_update_interval = 200  # 5 FPS
+        self.last_gui_update = 0
+        self.detection_queue = queue.Queue(maxsize=2)
+        self.result_queue = queue.Queue(maxsize=5)
+        
+        # 啟動異步處理
+        self._start_async_processing()
+        
         # 建立GUI介面
         self._create_gui()
         
@@ -184,13 +196,66 @@ class MonsterDetectionGUI(QMainWindow):
         if hasattr(ro_helper, 'auto_combat'):
             ro_helper.auto_combat.is_enabled = False
             ro_helper.auto_combat.auto_hunt_mode = "off"
-            
-        print("🎮 怪物檢測GUI已啟動（PyQt5版本）")
-        print(f"✅ 怪物檢測器狀態: {'已初始化' if self.monster_detector else '未初始化'}")
-        print(f"✅ 路徑系統狀態: {'已初始化' if self.waypoint_system else '未初始化'}")
-        print("🔧 GUI初始化完成，戰鬥系統等待手動啟用")
         
         self.ui_helper = UITemplateHelper(adb=self.ro_helper.adb, cooldown_interval=0.7)
+    
+    def _initialize_health_detector(self):
+        """初始化血條檢測器"""
+        try:
+            from modules.health_mana_detector import HealthManaDetector
+            self.health_detector = HealthManaDetector()
+            print("✅ 血條檢測器已初始化")
+        except Exception as e:
+            print(f"❌ 血條檢測器初始化失敗: {e}")
+            self.health_detector = None
+
+    def _process_frame(self):
+        """擴展的畫面處理（包含血條檢測）"""
+        frame, monsters = super()._process_frame()
+        
+        health_info = {}
+        if self.health_detector and frame is not None:
+            health_info = self.health_detector.detect_health_mana(frame)
+            
+            # 在畫面上顯示血條和魔力條資訊
+            if health_info.get('success', False):
+                hp_percent = health_info.get('hp_percentage', 0)
+                mp_percent = health_info.get('mp_percentage', 0)
+                
+                # 在畫面上顯示血條和魔力條資訊
+                cv2.putText(frame, f"HP: {hp_percent:.1f}%", (10, 30), 
+                          cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                cv2.putText(frame, f"MP: {mp_percent:.1f}%", (10, 60), 
+                          cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+        
+        return frame, monsters, health_info
+
+    def _update_gui(self, frame, monsters):
+        """更新GUI顯示（包含血條資訊）"""
+        if frame is not None:
+            # 處理血條資訊
+            health_info = {}
+            if self.health_detector:
+                health_info = self.health_detector.detect_health_mana(frame)
+                
+                if health_info.get('success', False):
+                    hp_percent = health_info.get('hp_percentage', 0)
+                    mp_percent = health_info.get('mp_percentage', 0)
+                    
+                    # 更新狀態列
+                    self.statusBar().showMessage(
+                        f"HP: {hp_percent:.1f}% | MP: {mp_percent:.1f}% | "
+                        f"怪物數量: {len(monsters)}"
+                    )
+            
+            # 更新怪物列表
+            self._update_monster_list(monsters)
+            
+            # 更新畫面
+            self._update_frame(frame)
+            
+            # 更新狀態
+            self._update_status()
     
     def _create_gui(self):
         """建立完整GUI介面"""
@@ -410,12 +475,12 @@ class MonsterDetectionGUI(QMainWindow):
             try:
                 if self.detection_enabled:
                     # 使用基礎處理函數
-                    _, monsters = self._process_frame()
+                    _, monsters, health_info = self._process_frame()
                     
                     # 更新GUI（主執行緒）
                     QMetaObject.invokeMethod(self, "_update_detection_results", 
                                            Qt.QueuedConnection, 
-                                           Q_ARG('PyQt_PyObject', monsters))
+                                           Q_ARG('PyQt_PyObject', (monsters, health_info)))
                     
                     # 計算FPS
                     frame_count += 1
@@ -434,22 +499,25 @@ class MonsterDetectionGUI(QMainWindow):
                 time.sleep(0.01)  # 錯誤時稍微等待
     
     @pyqtSlot('PyQt_PyObject')
-    def _update_detection_results(self, monsters):
+    def _update_detection_results(self, data):
         """更新檢測結果顯示（移除畫布與FPS相關）"""
         try:
             current_time = datetime.now().strftime("%H:%M:%S.%f")[:-3]
             
             # 更新詳細資訊
-            self._update_detailed_info(monsters, current_time)
+            self._update_detailed_info(data[0], current_time)
             
             # 更新歷史記錄
-            self._update_history(monsters, current_time)
+            self._update_history(data[0], current_time)
             
             # 更新統計
-            self._update_statistics(monsters)
+            self._update_statistics(data[0])
             
             # 保存結果
-            self.last_detection_results = monsters
+            self.last_detection_results = data[0]
+            
+            # 更新血條資訊
+            self._update_health_info(data[1])
             
         except Exception as e:
             print(f"結果更新錯誤: {e}")
@@ -458,12 +526,12 @@ class MonsterDetectionGUI(QMainWindow):
         """✅ 基礎畫面處理函數"""
         try:
             if not self.ro_helper or not hasattr(self.ro_helper, 'capturer'):
-                return None, []
+                return None, [], {}
             
             # 獲取遊戲畫面
             frame = self.ro_helper.capturer.grab_frame()
             if frame is None:
-                return None, []
+                return None, [], {}
             
             # 執行怪物檢測
             monsters = []
@@ -471,11 +539,11 @@ class MonsterDetectionGUI(QMainWindow):
                 monsters = self.monster_detector.detect_monsters(frame)
                 monsters = monsters if monsters else []
             
-            return frame, monsters
+            return frame, monsters, {}
             
         except Exception as e:
             print(f"❌ 畫面處理錯誤: {e}")
-            return None, []
+            return None, [], {}
     
     def _update_detailed_info(self, monsters, current_time):
         """更新詳細資訊頁籤"""
@@ -675,7 +743,7 @@ class MonsterDetectionGUI(QMainWindow):
                 results = self.monster_detector.detect_and_save_result(frame)
                 
                 if results:
-                    self._update_detection_results(results)
+                    self._update_detection_results((results, {}))
                     print(f"📸 檢測+保存完成: {len(results)} 個結果")
                 else:
                     print("📸 無檢測結果，已保存原始畫面供檢查")
@@ -872,7 +940,7 @@ class MonsterDetectionGUI(QMainWindow):
             print(f"⚠️ 清理 OpenCV 資源時發生警告: {e}")
 
     def _opencv_display_loop(self):
-        """OpenCV 即時顯示循環"""
+        """OpenCV 即時顯示循環 - 增加HUD辨識框顯示"""
         try:
             window_name = "Maple Helper - 怪物檢測"
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -900,6 +968,9 @@ class MonsterDetectionGUI(QMainWindow):
                     # 複製畫面以避免修改原始資料
                     display_frame = frame.copy()
                     
+                    # 執行HUD檢測並繪製辨識框
+                    display_frame = self._draw_hud_detection(display_frame)
+                    
                     # 執行血條檢測
                     display_frame = self.locate_and_draw_health_bar(display_frame)
                     
@@ -913,23 +984,15 @@ class MonsterDetectionGUI(QMainWindow):
                     
                     # 控制顯示頻率
                     key = cv2.waitKey(1)
-                    if key == 27:  # ESC 鍵
-                        break
-                    
-                    # 控制更新頻率
-                    time.sleep(0.1)  # 降低到 10 FPS
                     
                 except Exception as e:
-                    print(f"⚠️ 即時顯示錯誤: {e}")
-                    time.sleep(0.2)
-                    continue
-            
+                    print(f"❌ 顯示循環錯誤: {e}")
+                    time.sleep(0.1)
+                    
         except Exception as e:
-            print(f"❌ 即時顯示循環錯誤: {e}")
+            print(f"❌ 顯示循環初始化失敗: {e}")
         finally:
-            # 清理資源
             cv2.destroyAllWindows()
-            print("✅ 即時顯示已停止")
 
     def _draw_minimap_visualization(self, frame, minimap_rect):
         """繪製小地圖可視化（移除角色位置顯示）"""
@@ -1001,6 +1064,49 @@ class MonsterDetectionGUI(QMainWindow):
             cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
         except Exception as e:
             print(f"❌ 區域繪製失敗: {e}")
+
+    def _draw_hud_detection(self, frame):
+        """繪製HUD辨識框"""
+        try:
+            if not hasattr(self, 'health_detector') or self.health_detector is None:
+                return frame
+            
+            # 執行HUD檢測
+            detection_result = self.health_detector.detect_health_mana(frame)
+            
+            # 繪製HUD主框
+            if detection_result.get('hud_rect'):
+                x, y, w, h = detection_result['hud_rect']
+                # 繪製HUD主框 - 藍色
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
+                cv2.putText(frame, 'HUD', (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+                
+                # 顯示匹配度信息
+                if detection_result.get('success'):
+                    hp_pct = detection_result.get('hp_percentage', 0)
+                    mp_pct = detection_result.get('mp_percentage', 0)
+                    status_text = f"HP: {hp_pct:.1f}% MP: {mp_pct:.1f}%"
+                    cv2.putText(frame, status_text, (x, y+h+20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+            
+            # 繪製HP條框
+            if detection_result.get('hp_rect'):
+                x, y, w, h = detection_result['hp_rect']
+                # 繪製HP條框 - 紅色
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 0, 255), 2)
+                cv2.putText(frame, 'HP', (x, y-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+            
+            # 繪製MP條框
+            if detection_result.get('mp_rect'):
+                x, y, w, h = detection_result['mp_rect']
+                # 繪製MP條框 - 藍色
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
+                cv2.putText(frame, 'MP', (x, y-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+            
+            return frame
+            
+        except Exception as e:
+            print(f"❌ HUD辨識框繪製失敗: {e}")
+            return frame
 
     def locate_and_draw_health_bar(self, frame, templates_dir="templates/MainScreen"):
         if frame is None or frame.size == 0:
@@ -1356,6 +1462,145 @@ class MonsterDetectionGUI(QMainWindow):
             print(f"⚠️ 全畫面怪物繪製失敗: {e}")
         
         return display_frame
+
+    def _start_async_processing(self):
+        """啟動異步處理"""
+        self.processing_thread = threading.Thread(
+            target=self._async_processing_worker,
+            daemon=True
+        )
+        self.processing_thread.start()
+    
+    def _async_processing_worker(self):
+        """異步處理工作執行緒"""
+        while True:
+            try:
+                frame = self.detection_queue.get(timeout=1)
+                if frame is not None:
+                    # 處理畫面
+                    monsters, health_info = self.monster_detector.detect_monsters(frame)
+                    
+                    # 放入結果佇列
+                    try:
+                        self.result_queue.put((frame, monsters, health_info), block=False)
+                    except queue.Full:
+                        pass
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"❌ 異步處理失敗: {e}")
+    
+    def _detection_loop(self):
+        """✅ 優化版：控制檢測和更新頻率"""
+        try:
+            while self.is_running:
+                if self.detection_enabled:
+                    # 獲取畫面
+                    frame = self.ro_helper.capturer.grab_frame()
+                    if frame is not None:
+                        # 放入檢測佇列
+                        try:
+                            self.detection_queue.put(frame, block=False)
+                        except queue.Full:
+                            pass
+                    
+                    # 檢查結果佇列
+                    try:
+                        frame, monsters, health_info = self.result_queue.get_nowait()
+                        
+                        # 控制 GUI 更新頻率
+                        current_time = time.time() * 1000
+                        if current_time - self.last_gui_update > self.gui_update_interval:
+                            self._update_gui(frame, monsters)
+                            self.last_gui_update = current_time
+                            
+                    except queue.Empty:
+                        pass
+                
+                time.sleep(0.05)  # 降低到 20 FPS
+                
+        except Exception as e:
+            print(f"❌ 檢測循環失敗: {e}")
+    
+    def _update_gui(self, frame, monsters):
+        """✅ 優化版：更新 GUI"""
+        try:
+            # 處理血條資訊
+            health_info = {}
+            if self.health_detector:
+                health_info = self.health_detector.detect_health_mana(frame)
+                
+                if health_info.get('success', False):
+                    hp_percent = health_info.get('hp_percentage', 0)
+                    mp_percent = health_info.get('mp_percentage', 0)
+                    
+                    # 更新狀態列
+                    self.statusBar().showMessage(
+                        f"HP: {hp_percent:.1f}% | MP: {mp_percent:.1f}% | "
+                        f"怪物數量: {len(monsters)}"
+                    )
+            
+            # 更新怪物列表
+            self._update_monster_list(monsters)
+            
+            # 更新畫面
+            self._update_frame(frame)
+            
+            # 更新狀態
+            self._update_status()
+            
+        except Exception as e:
+            print(f"❌ GUI 更新失敗: {e}")
+    
+    def _update_monster_list(self, monsters):
+        """更新怪物列表"""
+        try:
+            self.monster_list.clear()
+            for monster in monsters:
+                item = QListWidgetItem(
+                    f"{monster['type']} - 信心度: {monster['confidence']:.2f}"
+                )
+                self.monster_list.addItem(item)
+                
+        except Exception as e:
+            print(f"❌ 更新怪物列表失敗: {e}")
+    
+    def _update_frame(self, frame):
+        """更新畫面"""
+        try:
+            if frame is not None:
+                # 轉換為 QImage
+                height, width, channel = frame.shape
+                bytes_per_line = 3 * width
+                q_image = QImage(
+                    frame.data, width, height,
+                    bytes_per_line, QImage.Format_RGB888
+                )
+                
+                # 更新標籤
+                self.frame_label.setPixmap(
+                    QPixmap.fromImage(q_image).scaled(
+                        self.frame_label.size(),
+                        Qt.KeepAspectRatio,
+                        Qt.FastTransformation
+                    )
+                )
+                
+        except Exception as e:
+            print(f"❌ 更新畫面失敗: {e}")
+    
+    def _update_status(self):
+        """更新狀態"""
+        try:
+            status = self.ro_helper.get_status()
+            self.status_label.setText(
+                f"追蹤: {'啟用' if status['tracking_enabled'] else '停用'} | "
+                f"戰鬥: {'啟用' if status['combat_enabled'] else '停用'} | "
+                f"ADB: {'已連接' if status['adb_connected'] else '未連接'}"
+            )
+            
+        except Exception as e:
+            print(f"❌ 更新狀態失敗: {e}")
 
     def run(self):
         """啟動 GUI 事件循環"""

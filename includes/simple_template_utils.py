@@ -6,6 +6,8 @@ import numpy as np
 import os
 import time
 from typing import List, Dict
+import queue
+import threading
 
 class MapleStoryMonsterDetector:
     """RO怪物檢測器 - 基於成功測試的平衡參數"""
@@ -42,7 +44,6 @@ class MapleStoryMonsterDetector:
                 sigma=1.6
             )
             self.use_sift = True   # 改回True
-            print("✅ 使用SIFT檢測器")
             return True            # 改回True
         except AttributeError:
             self.detector = cv2.ORB_create(nfeatures=800)
@@ -55,7 +56,6 @@ class MapleStoryMonsterDetector:
             index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=3)  # 從5降到3
             search_params = dict(checks=30)                            # 從50降到30
             self.matcher = cv2.FlannBasedMatcher(index_params, search_params)
-            print("✅ 使用性能優化FLANN匹配器")
         else:
             # ORB配置保持不變
             FLANN_INDEX_LSH = 6
@@ -70,8 +70,6 @@ class MapleStoryMonsterDetector:
     
     def _load_templates(self):
         """載入模板"""
-        print("📁 載入平衡版模板...")
-        
         try:
             for item in os.listdir(self.template_dir):
                 item_path = os.path.join(self.template_dir, item)
@@ -93,13 +91,6 @@ class MapleStoryMonsterDetector:
             
             # ✅ 同時填充single_templates以確保相容性
             self.single_templates = self.templates.copy()
-            
-            original_count = sum(1 for t in self.templates if not self._is_flipped_template(t['name']))
-            flipped_count = sum(1 for t in self.templates if self._is_flipped_template(t['name']))
-            
-            print(f"✅ 成功載入 {len(self.templates)} 個平衡模板")
-            print(f"   原始模板: {original_count} 個")
-            print(f"   翻轉模板: {flipped_count} 個")
             
         except Exception as e:
             print(f"❌ 載入模板失敗: {e}")
@@ -123,8 +114,6 @@ class MapleStoryMonsterDetector:
         # 為每個怪物創建動畫幀列表
         for monster_name, templates in monster_groups.items():
             self.animated_templates[monster_name] = templates
-        
-        print(f"✅ 生成動畫模板映射: {len(self.animated_templates)} 個怪物類型")
     
     def _process_template(self, file_path, template_name):
         """✅ 處理單個模板 - 使用高級灰階轉換"""
@@ -683,6 +672,165 @@ class UITemplateHelper:
             h, w = template_gray.shape[:2]
             return (max_loc[0], max_loc[1], w, h)
         return None
+
+class OptimizedMonsterDetector:
+    def __init__(self, config):
+        self.config = config
+        
+        # ✅ 新增：效能優化相關
+        self.use_template_matching = True
+        self.detector = cv2.ORB_create(
+            nfeatures=200,  # 減少特徵點
+            scaleFactor=1.2,
+            nlevels=4  # 減少金字塔層數
+        )
+        
+        # 記憶體池
+        self.memory_pool = {
+            'gray_frames': [],
+            'temp_arrays': []
+        }
+        
+        # 檢測佇列
+        self.detection_queue = queue.Queue(maxsize=2)
+        self.result_queue = queue.Queue(maxsize=5)
+        
+        # 啟動異步檢測
+        self._start_async_detection()
+        
+        print("✅ 怪物檢測器已初始化")
+    
+    def _start_async_detection(self):
+        """啟動異步檢測"""
+        self.detection_thread = threading.Thread(
+            target=self._async_detection_worker,
+            daemon=True
+        )
+        self.detection_thread.start()
+    
+    def _async_detection_worker(self):
+        """異步檢測工作執行緒"""
+        while True:
+            try:
+                frame = self.detection_queue.get(timeout=1)
+                if frame is not None:
+                    monsters = self._fast_detect_monsters(frame)
+                    try:
+                        self.result_queue.put(monsters, block=False)
+                    except queue.Full:
+                        pass
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"❌ 異步檢測失敗: {e}")
+    
+    def _fast_detect_monsters(self, frame):
+        """快速怪物檢測"""
+        try:
+            if self.use_template_matching:
+                return self._template_matching_only(frame)
+            else:
+                return self._reduced_feature_detection(frame)
+        except Exception as e:
+            print(f"❌ 怪物檢測失敗: {e}")
+            return []
+    
+    def _template_matching_only(self, frame):
+        """僅使用模板匹配"""
+        try:
+            # 獲取灰度圖
+            gray = self._get_gray_frame(frame)
+            
+            monsters = []
+            for template_name, template in self.templates.items():
+                # 使用模板匹配
+                result = cv2.matchTemplate(
+                    gray, template, cv2.TM_CCOEFF_NORMED
+                )
+                locations = np.where(result >= self.config.get('detection_threshold', 0.7))
+                
+                for pt in zip(*locations[::-1]):
+                    monsters.append({
+                        'type': template_name,
+                        'confidence': result[pt[1], pt[0]],
+                        'location': (pt[0], pt[1], template.shape[1], template.shape[0])
+                    })
+            
+            return monsters
+            
+        except Exception as e:
+            print(f"❌ 模板匹配失敗: {e}")
+            return []
+    
+    def _reduced_feature_detection(self, frame):
+        """減少特徵點檢測"""
+        try:
+            # 獲取灰度圖
+            gray = self._get_gray_frame(frame)
+            
+            # 檢測特徵點
+            keypoints = self.detector.detect(gray, None)
+            
+            # 計算描述符
+            keypoints, descriptors = self.detector.compute(gray, keypoints)
+            
+            # 匹配特徵點
+            monsters = []
+            for template_name, template_desc in self.template_descriptors.items():
+                matches = self.matcher.knnMatch(descriptors, template_desc, k=2)
+                
+                good_matches = []
+                for m, n in matches:
+                    if m.distance < 0.75 * n.distance:
+                        good_matches.append(m)
+                
+                if len(good_matches) > 10:
+                    monsters.append({
+                        'type': template_name,
+                        'confidence': len(good_matches) / len(matches),
+                        'location': self._get_bounding_box(keypoints, good_matches)
+                    })
+            
+            return monsters
+            
+        except Exception as e:
+            print(f"❌ 特徵檢測失敗: {e}")
+            return []
+    
+    def _get_gray_frame(self, frame):
+        """從記憶體池獲取灰度圖"""
+        try:
+            shape = frame.shape[:2]
+            for gray in self.memory_pool['gray_frames']:
+                if gray.shape == shape:
+                    self.memory_pool['gray_frames'].remove(gray)
+                    cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY, dst=gray)
+                    return gray
+            
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            return gray
+            
+        except Exception as e:
+            print(f"❌ 獲取灰度圖失敗: {e}")
+            return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    
+    def _return_gray_frame(self, gray):
+        """歸還灰度圖到記憶體池"""
+        if len(self.memory_pool['gray_frames']) < 5:
+            self.memory_pool['gray_frames'].append(gray)
+    
+    def _get_bounding_box(self, keypoints, matches):
+        """計算邊界框"""
+        try:
+            points = [keypoints[m.queryIdx].pt for m in matches]
+            x = min(p[0] for p in points)
+            y = min(p[1] for p in points)
+            w = max(p[0] for p in points) - x
+            h = max(p[1] for p in points) - y
+            return (int(x), int(y), int(w), int(h))
+        except Exception as e:
+            print(f"❌ 計算邊界框失敗: {e}")
+            return (0, 0, 0, 0)
 
 # 創建並導出怪物檢測器實例
 monster_detector = MapleStoryMonsterDetector()

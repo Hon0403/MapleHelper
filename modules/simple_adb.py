@@ -42,8 +42,12 @@ class SimpleADB:
         self._init_connection()
         
         # 初始化畫面捕獲器
-        from modules.simple_capturer import SimpleCapturer
-        self.capturer = SimpleCapturer(config)
+        try:
+            from modules.simple_capturer import SimpleCapturer
+            self.capturer = SimpleCapturer(config)
+        except Exception as e:
+            print(f"❌ 初始化畫面捕獲器失敗: {e}")
+            self.capturer = None
         
         print("🍁 楓之谷角色操作控制器已初始化")
 
