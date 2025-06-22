@@ -11,12 +11,16 @@ import math
 from pathlib import Path
 import subprocess
 import hashlib
+import threading
 from modules.simple_waypoint_system import SimpleWaypointSystem
 from modules.coordinate import simple_coordinate_conversion
 
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
+from PyQt5.QtGui import QCloseEvent, QResizeEvent, QShowEvent
+from PyQt5.QtCore import QEvent
+from PyQt5.QtCore import pyqtSlot
 
 class CanvasWidget(QWidget):
     """✅ 改進版畫布小部件 - 優化性能"""
@@ -26,6 +30,8 @@ class CanvasWidget(QWidget):
     canvas_dragged = pyqtSignal(QMouseEvent)
     canvas_released = pyqtSignal(QMouseEvent)
     mouse_moved = pyqtSignal(QMouseEvent)
+    # ✅ 新增：大小調整信號
+    resized = pyqtSignal()
     
     def __init__(self, width=800, height=600):
         super().__init__()
@@ -93,30 +99,33 @@ class CanvasWidget(QWidget):
         self.update()
     
     def paintEvent(self, event):
-        """✅ 改進版繪製事件"""
-        if self.needs_redraw or self.cached_pixmap is None:
+        """✅ 優化版繪製事件 - 修正清除問題"""
+        # 優化：僅在需要時重繪緩存
+        if self.needs_redraw or self.cached_pixmap is None or self.cached_pixmap.size() != self.size():
             # 創建新的緩存
             self.cached_pixmap = QPixmap(self.size())
-            self.cached_pixmap.fill(Qt.transparent)
+            
+            # ✅ 修正：使用不透明背景色填充，避免穿透
+            self.cached_pixmap.fill(Qt.white)
             
             painter = QPainter(self.cached_pixmap)
             painter.setRenderHint(QPainter.Antialiasing)
             
             # 繪製背景圖片
             if self.background_image:
-                # 計算居中位置
                 widget_rect = self.rect()
-                image_rect = self.background_image.rect()
                 
-                x = (widget_rect.width() - image_rect.width()) // 2
-                y = (widget_rect.height() - image_rect.height()) // 2
-                
-                # 使用 QPixmap 的 scaled 方法進行縮放
+                # ✅ 優化：保持寬高比縮放
                 scaled_pixmap = self.background_image.scaled(
                     widget_rect.size(),
                     Qt.KeepAspectRatio,
                     Qt.SmoothTransformation
                 )
+                
+                # ✅ 修正：正確計算居中位置
+                image_rect = scaled_pixmap.rect()
+                x = (widget_rect.width() - image_rect.width()) // 2
+                y = (widget_rect.height() - image_rect.height()) // 2
                 
                 painter.drawPixmap(x, y, scaled_pixmap)
             
@@ -127,7 +136,7 @@ class CanvasWidget(QWidget):
             painter.end()
             self.needs_redraw = False
         
-        # 繪製緩存
+        # 從緩存繪製到畫布
         painter = QPainter(self)
         painter.drawPixmap(0, 0, self.cached_pixmap)
         painter.end()
@@ -200,203 +209,277 @@ class CanvasWidget(QWidget):
         font = QFont(item.get('font_family', 'Arial'), item.get('font_size', 10))
         if item.get('font_weight') == 'bold':
             font.setBold(True)
+            
         painter.setFont(font)
-        
         painter.drawText(int(item['x']), int(item['y']), item['text'])
     
     def _draw_polygon(self, painter, item):
         """繪製多邊形"""
-        points = []
-        coords = item['coords']
-        for i in range(0, len(coords), 2):
-            points.append(QPoint(int(coords[i]), int(coords[i+1])))
+        points = [QPoint(int(item['coords'][i]), int(item['coords'][i+1])) for i in range(0, len(item['coords']), 2)]
         polygon = QPolygon(points)
+        
         pen = QPen(QColor(item.get('outline', 'black')))
+        pen.setWidth(item.get('outline_width', 1))
         painter.setPen(pen)
+        
         brush = QBrush(QColor(item.get('fill', 'transparent')))
         painter.setBrush(brush)
+        
         painter.drawPolygon(polygon)
-    
+
     def mouseMoveEvent(self, event):
-        """✅ 改進版鼠標移動事件"""
-        if self.last_mouse_pos is None:
-            self.last_mouse_pos = event.pos()
+        """✅ 改進版滑鼠移動事件"""
+        # 優化：減少事件觸發頻率
+        if self.last_mouse_pos and (event.pos() - self.last_mouse_pos).manhattanLength() < self.mouse_move_threshold:
             return
             
-        # 計算移動距離
-        dx = event.pos().x() - self.last_mouse_pos.x()
-        dy = event.pos().y() - self.last_mouse_pos.y()
-        distance = math.sqrt(dx*dx + dy*dy)
+        self.last_mouse_pos = event.pos()
         
-        # 只有移動距離超過閾值才觸發事件
-        if distance >= self.mouse_move_threshold:
-            self.last_mouse_pos = event.pos()
-            self.mouse_moved.emit(event)
-            
-            if self.is_dragging:
-                self.canvas_dragged.emit(event)
-    
+        # 發送信號
+        self.mouse_moved.emit(event)
+        
+        if self.is_dragging:
+            self.canvas_dragged.emit(event)
+
     def mousePressEvent(self, event):
-        """鼠標按下事件"""
+        """滑鼠點擊事件"""
         self.is_dragging = True
         self.drag_start_pos = event.pos()
-        self.last_mouse_pos = event.pos()
         self.canvas_clicked.emit(event)
-    
+
     def mouseReleaseEvent(self, event):
-        """鼠標釋放事件"""
+        """滑鼠釋放事件"""
         self.is_dragging = False
-        self.drag_start_pos = None
-        self.last_mouse_pos = None
         self.canvas_released.emit(event)
-    
-    def resizeEvent(self, event):
-        """✅ 改進版大小改變事件"""
+
+    def resizeEvent(self, event: QResizeEvent):
+        """✅ 改進版視窗大小調整事件，使用信號"""
         super().resizeEvent(event)
         self.cached_pixmap = None
         self.needs_redraw = True
+        self.update()
+        self.resized.emit() # 發送信號
+
 
 class WaypointEditor(QMainWindow):
-    """路徑點編輯器 - PyQt5版本"""
+    """✅ 重構版：WaypointEditor 作為一個獨立的 QMainWindow"""
     
-    def __init__(self, waypoint_system, tracker=None):
+    def __init__(self, waypoint_system, tracker=None, config=None):
         super().__init__()
+        
+        # 基本設定
         self.waypoint_system = waypoint_system
         self.tracker = tracker
-        self.editor_window = None
-        self.canvas = None
-        self.minimap_photo = None
+        self.config = config or {}
         
-        # 界面相關
-        self.canvas_width = 800
-        self.canvas_height = 600
-        self.scale_factor = 1.0
-        
-        # ✅ 修復：統一編輯狀態管理（PyQt5版本）
+        # 編輯狀態
         self.edit_mode = "waypoint"
         self.current_mode = "waypoint"
-        self.selected_type = "wall"
-        
-        # 拖曳相關
         self.is_dragging = False
         self.drawing_line = False
         self.drag_start_pos = None
-        self.preview_line_id = None
-        self.offset_x = 0
-        self.offset_y = 0
         
-        # 圖層顯示控制
+        # 畫布設定
+        self.canvas_width = 800
+        self.canvas_height = 600
+        self.brush_size = 5
+        self.brush_size_range = (1, 20)
+        
+        # 優化：設定預設的 checkbox 狀態
+        self.show_grid = True
         self.show_waypoints = True
         self.show_areas = True
-        self.show_obstacles = True
+        self.grid_size = 50
         
-        # 網格控制
-        self.snap_to_grid = True
-        self.show_grid = False
-        self.brush_size = 20
+        # 刪除距離設定
+        self.delete_distance = 0.03
         
-        # GUI 元件
-        self.coord_label = None
-        self.status_label = None
-        self.info_label = None
-        
-        # ✅ 歷史記錄系統
-        self.undo_history = {
-            'past': [],
-            'present': None,
-            'future': []
-        }
-        
-        # ✅ 檔案管理
-        self.file_var = ""
+        # 異步與UI狀態
+        self.minimap_loading = False
+        self.first_show = True
+        self.canvas = None
         self.file_combo = None
+        self.status_label = None
         
-        self._minimap_display_info = None  # 記錄顯示資訊
-        self._minimap_size = None          # 記錄原始小地圖尺寸
+        # 小地圖相關
+        self.minimap_photo = None
+        self._minimap_display_info = None
+        self._minimap_size = None
         
-        print("✅ 路徑編輯器已初始化")
-    
-    def create_editor_window(self):
-        """✅ 優化版：減少延遲和重複檢查"""
-        if self.editor_window is not None:
-            self.editor_window.raise_()
-            self.editor_window.activateWindow()
-            self._draw()
-            return
+        # 狀態管理
+        self.undo_stack = []
+        self.redo_stack = []
+        self.max_undo_steps = 20
+        
+        # 檔案管理
+        self.file_var = None
+        
+        # 初始化UI
+        self._setup_ui()
 
-        # 創建視窗
-        self.editor_window = QMainWindow()
-        self.editor_window.setWindowTitle("路徑點編輯器 - PyQt5版本")
-        self.editor_window.setGeometry(100, 100, 1200, 800)
+    def _setup_ui(self):
+        """初始化並設定UI介面"""
+        self.setWindowTitle("路徑點編輯器 - PyQt5版本")
+        self.setGeometry(100, 100, self.canvas_width + 300, self.canvas_height + 50)
         
-        # ✅ 重要：設置關閉事件處理
-        self.editor_window.closeEvent = self._on_window_close_event
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
         
-        # ✅ 先創建介面
-        self._create_editor_interface()
+        main_layout = QHBoxLayout(central_widget)
         
-        # ✅ 立即初始化小地圖，不再延遲
-        self._initialize_minimap_and_draw()
-        
-        # 顯示視窗
-        self.editor_window.show()
+        self._create_editor_interface(main_layout)
 
-    def _on_window_close_event(self, event):
-        """✅ PyQt5標準的關閉事件處理"""
+    def showEvent(self, event: QShowEvent):
+        """覆寫 showEvent，在視窗首次顯示時觸發異步載入"""
+        super().showEvent(event)
+        if self.first_show:
+            self.first_show = False
+            self._show_loading_and_start_async_load()
+
+    def closeEvent(self, event: QCloseEvent):
+        """覆寫 closeEvent，改為隱藏視窗以保留狀態"""
         try:
-            print("✅ 路徑點編輯器正在關閉...")
-            
-            # 清理資源
-            if hasattr(self, 'canvas'):
-                self.canvas = None
-            
-            if hasattr(self, 'minimap_photo'):
-                self.minimap_photo = None
-            
-            # ✅ 重要：重置窗口引用
-            self.editor_window = None
-            
-            # 接受關閉事件
+            self.hide()
+            event.ignore()
+        except Exception as e:
             event.accept()
+
+    def _show_loading_and_start_async_load(self):
+        """顯示載入中提示，並啟動異步小地圖載入"""
+        if self.minimap_loading:
+            return
             
-            print("✅ 路徑點編輯器已關閉（數據保留）")
+        self.status_label.setText("小地圖載入中...")
+        self.minimap_loading = True
+        self._draw() # 繪製初始狀態（如載入提示）
+        
+        QTimer.singleShot(100, self._start_minimap_load_thread)
+
+    def _start_minimap_load_thread(self):
+        """啟動背景執行緒來載入小地圖"""
+        load_thread = threading.Thread(target=self._initialize_minimap_and_draw, daemon=True)
+        load_thread.start()
+
+    def _initialize_minimap_and_draw(self):
+        """✅ 異步版：在背景執行緒中載入小地圖和資料"""
+        try:
+            success = self._load_minimap()
+            
+            # ✅ 防禦性檢查：確保視窗仍然存在且可見
+            if not self.isVisible():
+                self.minimap_loading = False
+                return
+
+            self.minimap_loading = False
+            
+            if success:
+                self.status_label.setText("小地圖載入成功")
+                self._finalize_ui_after_load()
+            else:
+                self.status_label.setText("小地圖載入失敗，請手動重試")
             
         except Exception as e:
-            print(f"❌ 關閉編輯器失敗: {e}")
-            # ✅ 即使出錯也要清理和關閉
-            self.editor_window = None
-            event.accept()
+            self.minimap_loading = False
+            import traceback
+            traceback.print_exc()
+
+    @pyqtSlot()
+    def _finalize_ui_after_load(self):
+        self._refresh_file_list()
+        self._draw()
+        self._update_info_labels()
+
+    def _create_editor_interface(self, main_layout):
+        """創建編輯器介面（PyQt5版本）"""
+        
+        # 創建畫布區域
+        self._create_canvas_area(main_layout)
+        
+        # 創建右側控制面板
+        control_panel = QFrame()
+        control_panel.setFixedWidth(280)
+        control_panel_layout = QVBoxLayout(control_panel)
+        main_layout.addWidget(control_panel)
+        
+        # 添加各個控制部分
+        self._create_file_management(control_panel_layout)
+        self._create_mode_selection(control_panel_layout)
+        self._create_editing_tools(control_panel_layout)
+        self._create_layer_controls(control_panel_layout)
+        self._create_quick_actions(control_panel_layout)
+        
+        # 添加狀態欄
+        control_panel_layout.addStretch()
+        self.status_label = QLabel("準備就緒")
+        control_panel_layout.addWidget(self.status_label)
+        
+    def _create_quick_actions(self, parent_layout):
+        """創建快捷操作（PyQt5版本）"""
+        tools_frame = QGroupBox("快速操作")
+        parent_layout.addWidget(tools_frame)
+        
+        tools_layout = QVBoxLayout(tools_frame)
+        
+        # ✅ 新增：手動重新載入按鈕
+        reload_btn = QPushButton("🔄 重新載入小地圖")
+        reload_btn.clicked.connect(self._show_loading_and_start_async_load)
+        tools_layout.addWidget(reload_btn)
+
+        actions = [
+            ("🗑️ 清除", self._clear_all_confirm),
+            ("↶ 撤消", self._undo),
+            ("↷ 重做", self._redo)
+        ]
+        
+        for text, command in actions:
+            btn = QPushButton(text)
+            btn.clicked.connect(command)
+            tools_layout.addWidget(btn)
+            
+    def _load_minimap(self):
+        """修正版：確保統一處理流程"""
+        try:
+            if not self._check_prerequisites():
+                return False
+            # 嘗試偵測小地圖
+            success = self.tracker.find_minimap()
+            if not success:
+                return False
+            # 獲取小地圖圖片
+            minimap_img = self.tracker.minimap_img
+            if minimap_img is None:
+                return False
+            # ✅ 轉換為PIL格式並處理
+            minimap_rgb = cv2.cvtColor(minimap_img, cv2.COLOR_BGR2RGB)
+            pil_image = Image.fromarray(minimap_rgb)
+            # 使用統一處理
+            return self._process_pil_image(pil_image)
+        except Exception as e:
+            return False
 
     def _check_prerequisites(self):
         """檢查必要條件"""
         try:
             # 檢查tracker是否存在
             if not self.tracker:
-                print("❌ 追蹤器未初始化")
                 return False
             # 檢查capturer是否存在
             if not hasattr(self.tracker, 'capturer') or not self.tracker.capturer:
-                print("❌ 畫面捕捉器未初始化")
                 return False
             # 檢查ADB連接
             if not self.tracker.capturer.is_connected:
-                print("❌ ADB未連接")
                 return False
             # 測試畫面捕捉
             test_frame = self.tracker.capturer.grab_frame()
             if test_frame is None:
-                print("❌ 無法獲取遊戲畫面")
                 return False
-            print(f"✅ 前置條件檢查通過，畫面尺寸: {test_frame.shape}")
             return True
         except Exception as e:
-            print(f"❌ 前置條件檢查失敗: {e}")
             return False
 
     def _process_pil_image(self, image):
         """修正版：確保背景完全替換"""
         try:
-            print("✅ 使用AutoMaple風格處理")
             # ✅ 先清除舊的小地圖狀態
             if hasattr(self, 'canvas') and self.canvas:
                 self.canvas.clear_all_items()
@@ -423,10 +506,8 @@ class WaypointEditor(QMainWindow):
             if hasattr(self, 'canvas') and self.canvas:
                 self.canvas.set_background_image(new_pixmap)
             self.minimap_photo = new_pixmap
-            print("✅ AutoMaple風格處理完成，背景已更新")
             return True
         except Exception as e:
-            print(f"❌ 處理失敗: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -441,7 +522,6 @@ class WaypointEditor(QMainWindow):
             qimage = QImage(np_array.data, width, height, width * channel, QImage.Format_RGB888)
             return qimage
         except Exception as e:
-            print(f"❌ PIL轉QImage失敗: {e}")
             return QImage(400, 300, QImage.Format_RGB888)
 
     def _canvas_to_relative(self, canvas_x, canvas_y):
@@ -464,154 +544,29 @@ class WaypointEditor(QMainWindow):
         canvas_y = rel_y * display_info['display_height'] + display_info['offset_y']
         return int(canvas_x), int(canvas_y)
 
-    def _initialize_minimap_and_draw(self):
-        """✅ 優化版：減少重複檢查"""
-        try:
-            print("🔄 開始初始化小地圖...")
-            
-            # 1. 檢查前置條件（簡化版）
-            if not self.tracker or not hasattr(self.tracker, 'capturer') or not self.tracker.capturer.is_connected:
-                print("❌ 前置條件檢查失敗")
-                return
-                
-            # 2. 自動偵測小地圖（與載入合併）
-            if hasattr(self.tracker, 'find_minimap'):
-                try:
-                    if not self.tracker.find_minimap():
-                        print("❌ 小地圖偵測失敗")
-                        return
-                    print("✅ 已自動偵測小地圖")
-                except Exception as e:
-                    print(f"❌ 自動偵測小地圖失敗: {e}")
-                    return
-            
-            # 3. 獲取並處理小地圖
-            minimap_img = self.tracker.minimap_img
-            if minimap_img is None:
-                print("❌ 小地圖圖片為空")
-                return
-                
-            # 4. 轉換為PIL格式並處理
-            minimap_rgb = cv2.cvtColor(minimap_img, cv2.COLOR_BGR2RGB)
-            pil_image = Image.fromarray(minimap_rgb)
-            
-            # 5. 使用統一處理
-            if self._process_pil_image(pil_image):
-                print("✅ 小地圖載入成功")
-                self._draw()
-            else:
-                print("❌ 小地圖處理失敗")
-                
-        except Exception as e:
-            print(f"❌ 初始化失敗: {e}")
-            import traceback
-            traceback.print_exc()
-
-    def _schedule_minimap_retry(self, max_retries=3):
-        """✅ 排程小地圖重試載入"""
-        if not hasattr(self, '_minimap_retry_count'):
-            self._minimap_retry_count = 0
-        
-        if self._minimap_retry_count < max_retries:
-            self._minimap_retry_count += 1
-            print(f"🔄 排程小地圖重試 ({self._minimap_retry_count}/{max_retries})")
-            
-            # 延遲重試
-            QTimer.singleShot(500, self._retry_load_minimap)
-
-    def _retry_load_minimap(self):
-        """✅ 重試載入小地圖"""
-        try:
-            if hasattr(self, 'minimap_photo') and self.minimap_photo:
-                return  # 已經載入成功
-            
-            success = self._load_minimap()
-            if success:
-                print("✅ 小地圖重試載入成功")
-                self._draw()  # 重新繪製
-            else:
-                # 繼續重試
-                self._schedule_minimap_retry()
-                
-        except Exception as e:
-            print(f"❌ 小地圖重試失敗: {e}")
-            self._schedule_minimap_retry()
-
-    def _create_editor_interface(self):
-        """創建編輯器介面（PyQt5版本）"""
-        try:
-            # 主容器
-            central_widget = QWidget()
-            self.editor_window.setCentralWidget(central_widget)
-            
-            main_layout = QHBoxLayout(central_widget)
-            main_layout.setContentsMargins(2, 2, 2, 2)
-
-            # 左側：畫布區域
-            canvas_frame = QGroupBox("地圖編輯區域")
-            main_layout.addWidget(canvas_frame, 3)  # 佔用更多空間
-            self._create_canvas_area(canvas_frame)
-
-            # 右側：控制面板
-            control_frame = QGroupBox("控制面板")
-            control_frame.setFixedWidth(300)
-            main_layout.addWidget(control_frame)
-            
-            control_layout = QVBoxLayout(control_frame)
-            
-            # 檔案管理
-            self._create_file_management(control_layout)
-            
-            # 編輯模式選擇
-            self._create_mode_selection(control_layout)
-            
-            # 編輯工具
-            self._create_editing_tools(control_layout)
-            
-            # 圖層控制
-            self._create_layer_controls(control_layout)
-            
-            # 快捷操作
-            self._create_quick_actions(control_layout)
-
-            # 底部：狀態欄
-            self.status_label = QLabel("就緒")
-            self.editor_window.statusBar().addWidget(self.status_label)
-            
-            print("✅ 編輯器介面已創建（PyQt5版本）")
-            
-        except Exception as e:
-            print(f"❌ 創建編輯器介面失敗: {e}")
-            import traceback
-            traceback.print_exc()
 
     def _create_canvas_area(self, parent):
         """創建畫布區域（PyQt5版本）"""
-        try:
-            layout = QVBoxLayout(parent)
-            # 創建自定義畫布
-            self.canvas = CanvasWidget(self.canvas_width, self.canvas_height)
-            # 綁定 resize 事件
-            self.canvas.resizeEvent = self._on_canvas_resize
-            # 創建滾動區域
-            scroll_area = QScrollArea()
-            scroll_area.setWidget(self.canvas)
-            scroll_area.setWidgetResizable(True)
-            layout.addWidget(scroll_area)
-            # ✅ 修復：綁定事件並同步編輯模式
-            self.canvas.canvas_clicked.connect(self._on_canvas_click)
-            self.canvas.canvas_dragged.connect(self._on_canvas_drag)
-            self.canvas.canvas_released.connect(self._on_canvas_release)
-            self.canvas.mouse_moved.connect(self._update_coord_label)
-            print("✅ 畫布區域已創建（PyQt5版本）")
-        except Exception as e:
-            print(f"❌ 創建畫布區域失敗: {e}")
+        canvas_frame = QFrame()
+        canvas_layout = QVBoxLayout(canvas_frame)
+        
+        self.canvas = CanvasWidget(self.canvas_width, self.canvas_height)
+        canvas_layout.addWidget(self.canvas)
+        
+        # 連接信號
+        self.canvas.canvas_clicked.connect(self._on_canvas_click)
+        self.canvas.canvas_dragged.connect(self._on_canvas_drag)
+        self.canvas.canvas_released.connect(self._on_canvas_release)
+        self.canvas.mouse_moved.connect(self._update_coord_label)
+        # ✅ 修正：使用信號與槽處理 resize，而不是猴子補丁
+        self.canvas.resized.connect(self._on_canvas_resize)
+        
+        parent.addWidget(canvas_frame)
 
-    def _on_canvas_resize(self, event):
-        """畫布大小變動時自動重新載入小地圖"""
-        print(f"[DEBUG] 畫布resize: {self.canvas.width()}x{self.canvas.height()}")
-        self._load_minimap()
-        event.accept()
+    def _on_canvas_resize(self):
+        """✅ 修正：處理畫布大小變動的槽函數"""
+        self.canvas.needs_redraw = True # 標記需要重繪
+        self._draw()
 
     def _create_file_management(self, parent_layout):
         """創建檔案管理區域（PyQt5版本）- 優化版"""
@@ -681,10 +636,9 @@ class WaypointEditor(QMainWindow):
     def _on_mode_button_clicked(self, mode):
         """處理模式按鈕點擊"""
         try:
-            print(f"🖱️ 點擊模式按鈕: {mode}")
             self._set_edit_mode(mode)
         except Exception as e:
-            print(f"❌ 模式按鈕點擊處理失敗: {e}")
+            pass
 
     def _set_edit_mode(self, mode):
         """修正版：設置編輯模式並完全清除前一模式狀態"""
@@ -693,7 +647,6 @@ class WaypointEditor(QMainWindow):
             old_mode = getattr(self, 'edit_mode', None)
             self.edit_mode = mode
             self.current_mode = mode
-            print(f"🔄 模式切換: {old_mode} -> {mode}")
             self._update_mode_buttons(mode)
             if hasattr(self, 'mode_label'):
                 mode_names = {
@@ -717,9 +670,8 @@ class WaypointEditor(QMainWindow):
             if hasattr(self, 'canvas') and self.canvas:
                 self.canvas.clear_items_by_tag("preview")
                 self.canvas.clear_items_by_tag("temp")
-            print(f"✅ 編輯模式已切換: {mode}")
         except Exception as e:
-            print(f"❌ 設置編輯模式失敗: {e}")
+            pass
 
     def _clear_current_mode_state(self):
         """清除當前模式的所有狀態"""
@@ -735,9 +687,8 @@ class WaypointEditor(QMainWindow):
                 self.canvas.clear_items_by_tag("preview")
                 self.canvas.clear_items_by_tag("temp")
                 self.canvas.clear_items_by_tag("drawing")
-            print("🧹 已清除前一模式狀態")
         except Exception as e:
-            print(f"❌ 清除模式狀態失敗: {e}")
+            pass
 
     def _update_mode_buttons(self, active_mode):
         """更新模式按鈕的選中狀態"""
@@ -756,9 +707,8 @@ class WaypointEditor(QMainWindow):
                         """)
                     else:
                         button.setStyleSheet("")
-            print(f"🎛️ 模式按鈕已更新: {active_mode}")
         except Exception as e:
-            print(f"❌ 更新模式按鈕失敗: {e}")
+            pass
 
     def _create_editing_tools(self, parent_layout):
         """創建編輯工具（PyQt5版本）"""
@@ -768,39 +718,48 @@ class WaypointEditor(QMainWindow):
         tools_layout = QVBoxLayout(tools_frame)
         
         # 筆刷大小
-        brush_widget = QWidget()
-        brush_layout = QHBoxLayout(brush_widget)
-        tools_layout.addWidget(brush_widget)
-        
+        brush_layout = QHBoxLayout()
         brush_layout.addWidget(QLabel("筆刷大小:"))
         
         self.brush_slider = QSlider(Qt.Horizontal)
-        self.brush_slider.setRange(5, 50)
-        self.brush_slider.setValue(20)
+        self.brush_slider.setRange(1, 20)
+        self.brush_slider.setValue(self.brush_size)
         self.brush_slider.valueChanged.connect(self._update_brush_size)
         brush_layout.addWidget(self.brush_slider)
         
-        self.brush_label = QLabel("20")
+        self.brush_label = QLabel(str(self.brush_size))
         brush_layout.addWidget(self.brush_label)
+        tools_layout.addLayout(brush_layout)
         
-        # 編輯選項
-        self.snap_grid_cb = QCheckBox("吸附網格")
-        self.snap_grid_cb.setChecked(True)
-        self.snap_grid_cb.stateChanged.connect(self._toggle_snap_grid)
-        tools_layout.addWidget(self.snap_grid_cb)
-        
+        # ✅ 優化：只保留有用的 checkbox
         self.show_grid_cb = QCheckBox("顯示網格")
+        self.show_grid_cb.setChecked(self.show_grid)
         self.show_grid_cb.stateChanged.connect(self._toggle_show_grid)
         tools_layout.addWidget(self.show_grid_cb)
+        
+        # ✅ 新增：網格大小控制
+        grid_layout = QHBoxLayout()
+        grid_layout.addWidget(QLabel("網格大小:"))
+        self.grid_size_slider = QSlider(Qt.Horizontal)
+        self.grid_size_slider.setRange(20, 100)
+        self.grid_size_slider.setValue(50)
+        self.grid_size_slider.valueChanged.connect(self._update_grid_size)
+        grid_layout.addWidget(self.grid_size_slider)
+        self.grid_size_label = QLabel("50")
+        grid_layout.addWidget(self.grid_size_label)
+        tools_layout.addLayout(grid_layout)
 
     def _update_brush_size(self, value):
         """更新筆刷大小"""
         self.brush_size = value
         self.brush_label.setText(str(value))
 
-    def _toggle_snap_grid(self, state):
-        """切換吸附網格"""
-        self.snap_to_grid = state == Qt.Checked
+    def _update_grid_size(self, value):
+        """更新網格大小"""
+        self.grid_size = value
+        self.grid_size_label.setText(str(value))
+        if self.show_grid:
+            self._draw()
 
     def _toggle_show_grid(self, state):
         """切換顯示網格"""
@@ -808,16 +767,16 @@ class WaypointEditor(QMainWindow):
         self._draw()
 
     def _create_layer_controls(self, parent_layout):
-        """創建圖層控制（PyQt5版本）"""
+        """創建圖層控制（優化版）"""
         layers_frame = QGroupBox("圖層顯示")
         parent_layout.addWidget(layers_frame)
         
         layers_layout = QVBoxLayout(layers_frame)
         
+        # ✅ 優化：只保留實際有用的圖層
         layers = [
             ("顯示路徑點", "show_waypoints"),
-            ("顯示區域標記", "show_areas"),
-            ("顯示障礙物", "show_obstacles")
+            ("顯示區域標記", "show_areas")
         ]
         
         for text, attr_name in layers:
@@ -853,8 +812,12 @@ class WaypointEditor(QMainWindow):
         
         tools_layout = QVBoxLayout(tools_frame)
         
+        # ✅ 新增：手動重新載入按鈕
+        reload_btn = QPushButton("🔄 重新載入小地圖")
+        reload_btn.clicked.connect(self._show_loading_and_start_async_load)
+        tools_layout.addWidget(reload_btn)
+
         actions = [
-            ("🔄 重繪", self._draw),
             ("🗑️ 清除", self._clear_all_confirm),
             ("↶ 撤消", self._undo),
             ("↷ 重做", self._redo)
@@ -887,10 +850,8 @@ class WaypointEditor(QMainWindow):
         try:
             canvas_x = event.pos().x()
             canvas_y = event.pos().y()
-            print(f"🖱️ 畫布點擊: ({canvas_x}, {canvas_y}) 模式: {self.edit_mode}")
             result = self._canvas_to_relative(canvas_x, canvas_y)
             if result is None:
-                print("❌ 座標轉換失敗")
                 return
             rel_x, rel_y = result
             if self.edit_mode == "waypoint":
@@ -904,10 +865,9 @@ class WaypointEditor(QMainWindow):
             elif self.edit_mode == "delete":
                 self._delete_nearest_element(rel_x, rel_y)
             else:
-                print(f"⚠️ 未知模式: {self.edit_mode}")
+                pass
             self._draw()
         except Exception as e:
-            print(f"❌ 點擊事件處理失敗: {e}")
             import traceback
             traceback.print_exc()
 
@@ -942,7 +902,7 @@ class WaypointEditor(QMainWindow):
                 self.canvas.preview_items.append(preview_item)
                 self.canvas.update()
         except Exception as e:
-            print(f"❌ 處理拖曳失敗: {e}")
+            pass
 
     def _on_canvas_release(self, event):
         """修正版：拖曳結束時自動補線"""
@@ -959,7 +919,7 @@ class WaypointEditor(QMainWindow):
             self.canvas.clear_items_by_tag("preview")
             self._draw()
         except Exception as e:
-            print(f"❌ 處理拖曳結束失敗: {e}")
+            pass
 
     def _update_coord_label(self, event):
         """更新座標標籤（PyQt5版本）"""
@@ -980,12 +940,10 @@ class WaypointEditor(QMainWindow):
             # 嘗試偵測小地圖
             success = self.tracker.find_minimap()
             if not success:
-                print("❌ 小地圖偵測失敗")
                 return False
             # 獲取小地圖圖片
             minimap_img = self.tracker.minimap_img
             if minimap_img is None:
-                print("❌ 小地圖圖片為空")
                 return False
             # ✅ 轉換為PIL格式並處理
             minimap_rgb = cv2.cvtColor(minimap_img, cv2.COLOR_BGR2RGB)
@@ -993,47 +951,155 @@ class WaypointEditor(QMainWindow):
             # 使用統一處理
             return self._process_pil_image(pil_image)
         except Exception as e:
-            print(f"❌ 小地圖載入失敗: {e}")
             return False
 
     # =============== 繪製方法 ===============
 
     def _draw(self):
-        """修正版：確保正確的重繪順序"""
+        """✅ 優化版：根據 checkbox 和載入狀態控制繪製"""
         try:
             if not hasattr(self, 'canvas') or not self.canvas:
-                print("❌ 畫布不存在")
                 return
-            print("🎨 開始重新繪製...")
             # ✅ 1. 清除所有繪製項目（但保留背景圖片）
             self.canvas.clear_all_items()
-            # ✅ 2. 確保背景圖片存在
-            if not hasattr(self, 'minimap_photo') or not self.minimap_photo:
-                print("⚠️ 沒有背景圖片")
+            # ✅ 2. 確保背景圖片存在或顯示載入中
+            if self.minimap_loading:
+                self.canvas.clear_all_items()
+                loading_item = {
+                    'type': 'text',
+                    'x': self.canvas.width() / 2 - 50,
+                    'y': self.canvas.height() / 2,
+                    'text': '小地圖載入中...',
+                    'color': 'white',
+                    'font_size': 16
+                }
+                self.canvas.add_drawing_item(loading_item)
                 return
-            # ✅ 3. 按順序繪製所有元素
-            print("🔵 繪製路徑點...")
-            self._draw_waypoints()
-            print("🔗 繪製路徑連接...")
-            self._draw_waypoint_connections()
-            print("🟢 繪製區域標記...")
-            self._draw_areas()
-            print("🚧 繪製障礙物...")
-            self._draw_obstacles()
-            print("✅ 繪製完成")
+
+            if not hasattr(self, 'minimap_photo') or not self.minimap_photo:
+                # 可以選擇繪製一個提示，而不是直接返回
+                self.canvas.clear_all_items()
+                no_map_item = {
+                    'type': 'text',
+                    'x': self.canvas.width() / 2 - 100,
+                    'y': self.canvas.height() / 2,
+                    'text': '小地圖載入失敗，請點擊右側重新載入',
+                    'color': 'white',
+                    'font_size': 12
+                }
+                self.canvas.add_drawing_item(no_map_item)
+                return
+            
+            # ✅ 3. 按順序繪製所有元素（根據 checkbox 狀態）
+            
+            # 繪製網格（如果啟用）
+            if self.show_grid:
+                self._draw_grid()
+            
+            # 繪製路徑點（如果啟用）
+            if self.show_waypoints:
+                self._draw_waypoints()
+                self._draw_waypoint_connections()
+            
+            # 繪製區域標記（如果啟用）
+            if self.show_areas:
+                self._draw_areas()
+            
         except Exception as e:
-            print(f"❌ 繪製失敗: {e}")
             import traceback
             traceback.print_exc()
 
-    def _draw_areas(self):
-        """修正版：繪製區域標記"""
+    def _draw_grid(self):
+        """✅ 優化版：繪製網格（使用可調整大小）"""
         try:
+            canvas_width = self.canvas.width() or self.canvas_width
+            canvas_height = self.canvas.height() or self.canvas_height
+            
+            # ✅ 使用可調整的網格大小
+            grid_size = getattr(self, 'grid_size', 50)
+            
+            # 垂直線
+            for x in range(0, canvas_width, grid_size):
+                grid_item = {
+                    'type': 'line',
+                    'x1': x,
+                    'y1': 0,
+                    'x2': x,
+                    'y2': canvas_height,
+                    'color': 'lightgray',
+                    'width': 1,
+                    'tag': 'grid'
+                }
+                self.canvas.add_drawing_item(grid_item)
+            
+            # 水平線
+            for y in range(0, canvas_height, grid_size):
+                grid_item = {
+                    'type': 'line',
+                    'x1': 0,
+                    'y1': y,
+                    'x2': canvas_width,
+                    'y2': y,
+                    'color': 'lightgray',
+                    'width': 1,
+                    'tag': 'grid'
+                }
+                self.canvas.add_drawing_item(grid_item)
+                
+        except Exception as e:
+            pass
+
+    def _draw_waypoints(self):
+        """✅ 優化版：繪製路徑點（只在啟用時繪製）"""
+        try:
+            if not self.show_waypoints:
+                return
+                
+            for i, waypoint in enumerate(self.waypoint_system.waypoints):
+                rel_x, rel_y = waypoint['pos']
+                canvas_x, canvas_y = self._relative_to_canvas(rel_x, rel_y)
+                
+                # 繪製路徑點
+                radius = 8
+                waypoint_item = {
+                    'type': 'oval',
+                    'x': canvas_x - radius,
+                    'y': canvas_y - radius,
+                    'width': radius * 2,
+                    'height': radius * 2,
+                    'fill': 'red',
+                    'outline': 'darkred',
+                    'outline_width': 2,
+                    'tag': 'waypoint'
+                }
+                self.canvas.add_drawing_item(waypoint_item)
+                
+                # 繪製編號
+                text_item = {
+                    'type': 'text',
+                    'x': canvas_x,
+                    'y': canvas_y - radius - 15,
+                    'text': str(i + 1),
+                    'color': 'black',
+                    'font_family': 'Arial',
+                    'font_size': 10,
+                    'font_weight': 'bold',
+                    'tag': 'waypoint'
+                }
+                self.canvas.add_drawing_item(text_item)
+                
+        except Exception as e:
+            pass
+
+    def _draw_areas(self):
+        """✅ 優化版：繪製區域標記（只在啟用時繪製）"""
+        try:
+            if not self.show_areas:
+                return
+                
             area_grid = self.waypoint_system.area_grid
             if not area_grid:
-                print("📋 沒有區域標記需要繪製")
                 return
-            print(f"🎨 開始繪製 {len(area_grid)} 個區域標記")
             for grid_key, area_type in area_grid.items():
                 try:
                     if isinstance(grid_key, str) and ',' in grid_key:
@@ -1044,7 +1110,6 @@ class WaypointEditor(QMainWindow):
                     else:
                         continue
                 except Exception as e:
-                    print(f"❌ 解析座標失敗: {grid_key} - {e}")
                     continue
                 canvas_pos = self._relative_to_canvas(rel_x, rel_y)
                 if canvas_pos is None:
@@ -1102,50 +1167,9 @@ class WaypointEditor(QMainWindow):
                         'tag': 'area'
                     }
                 self.canvas.add_drawing_item(item)
-            print(f"✅ 區域標記繪製完成")
         except Exception as e:
-            print(f"❌ 繪製區域標記失敗: {e}")
             import traceback
             traceback.print_exc()
-
-    def _draw_waypoints(self):
-        """繪製路徑點（PyQt5版本）"""
-        try:
-            for i, waypoint in enumerate(self.waypoint_system.waypoints):
-                rel_x, rel_y = waypoint['pos']
-                canvas_x, canvas_y = self._relative_to_canvas(rel_x, rel_y)
-                
-                # 繪製路徑點
-                radius = 8
-                waypoint_item = {
-                    'type': 'oval',
-                    'x': canvas_x - radius,
-                    'y': canvas_y - radius,
-                    'width': radius * 2,
-                    'height': radius * 2,
-                    'fill': 'red',
-                    'outline': 'darkred',
-                    'outline_width': 2,
-                    'tag': 'waypoint'
-                }
-                self.canvas.add_drawing_item(waypoint_item)
-                
-                # 繪製編號
-                text_item = {
-                    'type': 'text',
-                    'x': canvas_x,
-                    'y': canvas_y - radius - 15,
-                    'text': str(i + 1),
-                    'color': 'black',
-                    'font_family': 'Arial',
-                    'font_size': 10,
-                    'font_weight': 'bold',
-                    'tag': 'waypoint'
-                }
-                self.canvas.add_drawing_item(text_item)
-                
-        except Exception as e:
-            print(f"❌ 繪製路徑點失敗: {e}")
 
     def _draw_waypoint_connections(self):
         """繪製路徑點連接線（PyQt5版本）"""
@@ -1179,7 +1203,7 @@ class WaypointEditor(QMainWindow):
                                      next_canvas[0], next_canvas[1], "blue")
                 
         except Exception as e:
-            print(f"❌ 繪製路徑連接線失敗: {e}")
+            pass
 
     def _draw_arrow_item(self, x1, y1, x2, y2, color="blue"):
         """繪製箭頭項目"""
@@ -1210,104 +1234,24 @@ class WaypointEditor(QMainWindow):
                 self.canvas.add_drawing_item(arrow_item)
                 
         except Exception as e:
-            print(f"❌ 繪製箭頭失敗: {e}")
+            pass
 
     def _draw_obstacles(self):
-        """繪製障礙物（PyQt5版本）"""
-        try:
-            for obstacle in self.waypoint_system.obstacles:
-                rel_x, rel_y = obstacle['pos']
-                canvas_x, canvas_y = self._relative_to_canvas(rel_x, rel_y)
-                
-                size = obstacle.get('size', 0.05) * 500  # 相對大小轉換為像素
-                
-                # 繪製障礙物
-                obstacle_item = {
-                    'type': 'oval',
-                    'x': canvas_x - size/2,
-                    'y': canvas_y - size/2,
-                    'width': size,
-                    'height': size,
-                    'fill': 'brown',
-                    'outline': 'black',
-                    'outline_width': 2,
-                    'tag': 'obstacle'
-                }
-                self.canvas.add_drawing_item(obstacle_item)
-                
-                # 繪製類型標籤
-                text_item = {
-                    'type': 'text',
-                    'x': canvas_x,
-                    'y': canvas_y,
-                    'text': obstacle.get('type', '?'),
-                    'color': 'white',
-                    'font_family': 'Arial',
-                    'font_size': 8,
-                    'font_weight': 'bold',
-                    'tag': 'obstacle'
-                }
-                self.canvas.add_drawing_item(text_item)
-                
-        except Exception as e:
-            print(f"❌ 繪製障礙物失敗: {e}")
-
-    def _draw_grid(self):
-        """繪製網格（PyQt5版本）"""
-        try:
-            canvas_width = self.canvas.width() or self.canvas_width
-            canvas_height = self.canvas.height() or self.canvas_height
-            
-            grid_size = 50  # 網格大小
-            
-            # 垂直線
-            for x in range(0, canvas_width, grid_size):
-                grid_item = {
-                    'type': 'line',
-                    'x1': x,
-                    'y1': 0,
-                    'x2': x,
-                    'y2': canvas_height,
-                    'color': 'lightgray',
-                    'width': 1,
-                    'tag': 'grid'
-                }
-                self.canvas.add_drawing_item(grid_item)
-            
-            # 水平線
-            for y in range(0, canvas_height, grid_size):
-                grid_item = {
-                    'type': 'line',
-                    'x1': 0,
-                    'y1': y,
-                    'x2': canvas_width,
-                    'y2': y,
-                    'color': 'lightgray',
-                    'width': 1,
-                    'tag': 'grid'
-                }
-                self.canvas.add_drawing_item(grid_item)
-                
-        except Exception as e:
-            print(f"❌ 繪製網格失敗: {e}")
+        """❌ 移除：障礙物繪製功能（不再使用）"""
+        pass
 
     # =============== 檔案操作 ===============
 
     def _refresh_file_list(self):
-        """重新整理檔案列表（修正版）"""
+        """刷新檔案列表（修正版）"""
         try:
-            print("🔄 開始刷新檔案列表...")
-            
             # ✅ 確保 file_combo 存在
             if not hasattr(self, 'file_combo') or self.file_combo is None:
-                print("❌ file_combo 不存在，延遲重試")
                 QTimer.singleShot(500, self._refresh_file_list)
                 return
             
             # ✅ 使用 waypoint_system 的方法獲取檔案列表
-            available_files = self.waypoint_system.get_available_map_files()
-            
-            print(f"📁 發現 {len(available_files)} 個地圖檔案: {available_files}")
+            available_files = self.waypoint_system.get_files()
             
             # ✅ 更新下拉選單
             self.file_combo.clear()
@@ -1321,10 +1265,7 @@ class WaypointEditor(QMainWindow):
             else:
                 self.file_combo.addItem("無可用檔案")
             
-            print("✅ 檔案列表刷新完成")
-            
         except Exception as e:
-            print(f"❌ 重新整理檔案列表失敗: {e}")
             import traceback
             traceback.print_exc()
 
@@ -1332,32 +1273,28 @@ class WaypointEditor(QMainWindow):
         """載入選中的檔案 - 修正版：防止小地圖重疊"""
         try:
             if not hasattr(self, 'file_combo') or not self.file_combo:
-                print("❌ 檔案選擇框不存在")
                 return
             selected_file = self.file_combo.currentText()
             if not selected_file:
-                print("❌ 沒有選擇檔案")
                 return
-            file_path = os.path.join("data", selected_file)
-            print(f"🔄 開始載入地圖檔: {selected_file}")
+            
             # ✅ 1. 完全重置畫布（關鍵修正）
             if hasattr(self, 'canvas') and self.canvas:
-                print("🧹 重置畫布...")
                 self.canvas.reset_canvas()
+            
             # ✅ 2. 清除小地圖相關狀態
             self.minimap_photo = None
             self._minimap_display_info = None
             self._minimap_size = None
-            # ✅ 3. 載入路徑檔
-            if self.waypoint_system.load_map_data(file_path):
-                print(f"✅ 成功載入路徑檔: {selected_file}")
+            
+            # ✅ 3. 使用 load_specific_map 載入路徑檔
+            if self.waypoint_system.load_map(selected_file):
                 # ✅ 4. 重新載入小地圖（確保不重疊）
-                print("🔄 重新載入小地圖...")
                 self._load_minimap_for_new_file()
             else:
-                print(f"❌ 載入路徑檔失敗: {selected_file}")
+                pass
+                
         except Exception as e:
-            print(f"❌ 載入檔案時發生錯誤: {e}")
             import traceback
             traceback.print_exc()
 
@@ -1366,38 +1303,46 @@ class WaypointEditor(QMainWindow):
         try:
             QTimer.singleShot(100, self._initialize_minimap_and_draw)
         except Exception as e:
-            print(f"❌ 重新載入小地圖失敗: {e}")
+            pass
 
     def _save_waypoints(self):
-        """修正版：保存路徑點到檔案"""
+        """保存路徑點（PyQt5版本）"""
         try:
-            filename = self.file_combo.currentText() if self.file_combo else ""
+            filename, ok = QFileDialog.getSaveFileName(
+                self,
+                "保存路徑檔",
+                "data/",
+                "JSON Files (*.json)"
+            )
+            
             if not filename:
-                filename = "路徑_0點.json"
+                return
+            
+            # 確保副檔名
             if not filename.endswith('.json'):
                 filename += '.json'
-            data_dir = Path("data")
-            data_dir.mkdir(exist_ok=True)
-            file_path = data_dir / filename
-            full_path_str = str(file_path)
-            print(f"💾 準備保存到: {full_path_str}")
-            success = self.waypoint_system.save_map_data(full_path_str)
+            
+            # ✅ 修正：使用相對路徑
+            if filename.startswith('data/'):
+                relative_filename = filename[5:]  # 移除 "data/" 前綴
+            elif filename.startswith('data\\'):
+                relative_filename = filename[5:]  # 移除 "data\" 前綴
+            else:
+                relative_filename = filename
+            
+            success = self.waypoint_system.save_data(relative_filename)
+            
             if success:
-                self.status_label.setText(f"已保存: {filename}")
-                print(f"✅ 保存檔案成功: {filename}")
+                self.status_label.setText(f"已保存: {relative_filename}")
             else:
                 self.status_label.setText("保存失敗")
-                print("❌ 保存檔案失敗")
         except Exception as e:
             self.status_label.setText(f"保存失敗: {e}")
-            print(f"❌ 保存失敗: {e}")
-            import traceback
-            traceback.print_exc()
 
     def _create_new_path_file(self):
         """建立新路徑檔（PyQt5版本）"""
         try:
-            filename, ok = QInputDialog.getText(self.editor_window, "建立路徑檔", "請輸入檔案名稱:")
+            filename, ok = QInputDialog.getText(self, "建立路徑檔", "請輸入檔案名稱:")
             if not ok or not filename:
                 return
             
@@ -1425,14 +1370,12 @@ class WaypointEditor(QMainWindow):
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(empty_data, f, indent=2, ensure_ascii=False)
             
-            print(f"✅ 已建立路徑檔: {filename}")
             self.status_label.setText(f"已建立: {filename}")
             
             # 重新整理列表
             self._refresh_file_list()
             
         except Exception as e:
-            print(f"❌ 建立路徑檔失敗: {e}")
             self.status_label.setText(f"建立失敗: {e}")
 
     # =============== 撤消/重做系統 ===============
@@ -1448,32 +1391,31 @@ class WaypointEditor(QMainWindow):
             }
             
             # 限制歷史記錄數量
-            if len(self.undo_history['past']) >= 20:
-                self.undo_history['past'] = self.undo_history['past'][-19:]
+            if len(self.undo_stack) >= self.max_undo_steps:
+                self.undo_stack = self.undo_stack[-self.max_undo_steps+1:]
             
-            if self.undo_history['present'] is not None:
-                self.undo_history['past'].append(self.undo_history['present'])
+            if self.undo_stack:
+                self.redo_stack.append(self.undo_stack[-1])
             
-            self.undo_history['present'] = current_state
-            self.undo_history['future'] = []  # 清空future
+            self.undo_stack.append(current_state)
+            self.redo_stack = []  # 清空redo stack
             
         except Exception as e:
-            print(f"❌ 保存狀態失敗: {e}")
+            pass
 
     def _undo(self):
         """撤消操作"""
         try:
-            if not self.undo_history['past']:
-                print("❌ 沒有可撤消的操作")
+            if not self.undo_stack:
                 return
             
-            # 保存當前狀態到future
-            if self.undo_history['present'] is not None:
-                self.undo_history['future'].insert(0, self.undo_history['present'])
+            # 保存當前狀態到redo stack
+            if self.undo_stack:
+                self.redo_stack.append(self.undo_stack[-1])
             
             # 恢復上一個狀態
-            prev_state = self.undo_history['past'].pop()
-            self.undo_history['present'] = prev_state
+            prev_state = self.undo_stack.pop()
+            self.undo_stack.append(prev_state)
             
             # 恢復數據
             self.waypoint_system.area_grid = prev_state['area_grid'].copy()
@@ -1482,25 +1424,23 @@ class WaypointEditor(QMainWindow):
                 self.waypoint_system.obstacles = prev_state.get('obstacles', []).copy()
             
             self._draw()
-            print("↶ 撤消完成")
             
         except Exception as e:
-            print(f"❌ 撤消操作失敗: {e}")
+            pass
 
     def _redo(self):
         """重做操作"""
         try:
-            if not self.undo_history['future']:
-                print("❌ 沒有可重做的操作")
+            if not self.redo_stack:
                 return
             
-            # 保存當前狀態到past
-            if self.undo_history['present'] is not None:
-                self.undo_history['past'].append(self.undo_history['present'])
+            # 保存當前狀態到undo stack
+            if self.redo_stack:
+                self.undo_stack.append(self.redo_stack[-1])
             
             # 恢復future狀態
-            next_state = self.undo_history['future'].pop(0)
-            self.undo_history['present'] = next_state
+            next_state = self.redo_stack.pop()
+            self.redo_stack.append(next_state)
             
             # 恢復數據
             self.waypoint_system.area_grid = next_state['area_grid'].copy()
@@ -1509,10 +1449,9 @@ class WaypointEditor(QMainWindow):
                 self.waypoint_system.obstacles = next_state.get('obstacles', []).copy()
             
             self._draw()
-            print("↷ 重做完成")
             
         except Exception as e:
-            print(f"❌ 重做操作失敗: {e}")
+            pass
 
     # =============== 其他工具方法 ===============
 
@@ -1520,7 +1459,7 @@ class WaypointEditor(QMainWindow):
         """清除全部確認對話框（PyQt5版本）"""
         try:
             reply = QMessageBox.question(
-                self.editor_window,
+                self,
                 "確認清除",
                 "確定要清除所有路徑點和區域標記嗎？\n此操作可以撤消。",
                 QMessageBox.Yes | QMessageBox.No,
@@ -1540,11 +1479,10 @@ class WaypointEditor(QMainWindow):
                 
                 # 重新繪製
                 self._draw()
-                print("🗑️ 已清除所有數據")
                 self.status_label.setText("已清除所有內容")
                 
         except Exception as e:
-            print(f"❌ 清除操作失敗: {e}")
+            pass
 
     def _update_info_labels(self):
         """更新資訊標籤（PyQt5版本）"""
@@ -1559,20 +1497,18 @@ class WaypointEditor(QMainWindow):
                 self.info_label.setText(info_text)
                 
         except Exception as e:
-            print(f"❌ 更新資訊失敗: {e}")
+            pass
 
     def _on_window_close(self):
         """關閉視窗處理（PyQt5版本）"""
         try:
             # 簡單關閉，數據保留在waypoint_system中
-            if self.editor_window:
+            if hasattr(self, 'editor_window') and self.editor_window:
                 self.editor_window.close()
                 self.editor_window = None
-            print("✅ 路徑點編輯器已關閉（數據保留）（PyQt5版本）")
             
         except Exception as e:
-            print(f"❌ 關閉編輯器失敗: {e}")
-            if self.editor_window:
+            if hasattr(self, 'editor_window') and self.editor_window:
                 self.editor_window.close()
                 self.editor_window = None
 
@@ -1598,9 +1534,8 @@ class WaypointEditor(QMainWindow):
                 y = start_y + t * (end_y - start_y)
                 grid_key = f"{x:.3f},{y:.3f}"
                 self.waypoint_system.area_grid[grid_key] = area_type
-            print(f"✅ 標記{area_type}線段: {len(range(steps + 1))}個點")
         except Exception as e:
-            print(f"❌ 標記區域線段失敗: {e}")
+            pass
 
     def _delete_nearest_element(self, rel_x, rel_y):
         """刪除最近的元素"""
@@ -1610,12 +1545,11 @@ class WaypointEditor(QMainWindow):
             for i, waypoint in enumerate(self.waypoint_system.waypoints):
                 wp_x, wp_y = waypoint['pos']
                 distance = ((rel_x - wp_x)**2 + (rel_y - wp_y)**2)**0.5
-                if distance < min_distance and distance < 0.05:
+                if distance < min_distance and distance < self.delete_distance:
                     min_distance = distance
                     nearest_waypoint = i
             if nearest_waypoint is not None:
                 removed = self.waypoint_system.waypoints.pop(nearest_waypoint)
-                print(f"🗑️ 刪除路徑點: {removed['name']}")
                 self._draw()
                 return
             grid_key = f"{rel_x:.3f},{rel_y:.3f}"
@@ -1625,25 +1559,133 @@ class WaypointEditor(QMainWindow):
                     try:
                         key_x, key_y = map(float, key.split(','))
                         distance = ((rel_x - key_x)**2 + (rel_y - key_y)**2)**0.5
-                        if distance < 0.03:
+                        if distance < self.delete_distance:
                             del self.waypoint_system.area_grid[key]
                             deleted_keys.append(key)
                     except:
                         continue
             if deleted_keys:
-                print(f"🗑️ 刪除區域標記: {len(deleted_keys)}個點")
                 self._draw()
-            else:
-                print("❌ 附近沒有找到可刪除的元素")
         except Exception as e:
-            print(f"❌ 刪除元素失敗: {e}")
+            pass
 
     def _mark_area_point(self, rel_pos, area_type):
         """標記單個區域點"""
         try:
             grid_key = f"{rel_pos[0]:.3f},{rel_pos[1]:.3f}"
             self.waypoint_system.area_grid[grid_key] = area_type
-            print(f"✅ 標記{area_type}區域: {grid_key}")
             self._draw()
         except Exception as e:
-            print(f"❌ 標記區域點失敗: {e}")
+            pass
+
+    def init_minimap(self):
+        """初始化小地圖"""
+        try:
+            self._check_prerequisites()
+            self._load_minimap()
+            self._draw()
+        except Exception as e:
+            self._schedule_minimap_retry()
+
+    def create_ui(self):
+        """創建編輯器介面"""
+        try:
+            # 創建主佈局
+            main_layout = QVBoxLayout()
+            
+            # 創建各個區域
+            self._create_canvas_area(main_layout)
+            self._create_file_management(main_layout)
+            self._create_mode_selection(main_layout)
+            self._create_editing_tools(main_layout)
+            self._create_layer_controls(main_layout)
+            self._create_quick_actions(main_layout)
+            
+            # 設置主佈局
+            central_widget = QWidget()
+            central_widget.setLayout(main_layout)
+            self.setCentralWidget(central_widget)
+            
+            # 同步編輯模式
+            self._sync_edit_mode()
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+
+    def refresh_files(self):
+        """刷新檔案列表"""
+        try:
+            # 獲取可用檔案
+            available_files = self.waypoint_system.get_files()
+            
+            # 更新下拉選單
+            if hasattr(self, 'file_combo') and self.file_combo:
+                self.file_combo.clear()
+                for file in available_files:
+                    self.file_combo.addItem(file)
+            
+        except Exception as e:
+            pass
+
+    def load_file(self):
+        """載入選中的檔案"""
+        try:
+            if not hasattr(self, 'file_combo') or not self.file_combo:
+                return
+            selected_file = self.file_combo.currentText()
+            if not selected_file:
+                return
+            
+            # 重置畫布
+            if hasattr(self, 'canvas') and self.canvas:
+                self.canvas.reset_canvas()
+            
+            # 清除小地圖狀態
+            self.minimap_photo = None
+            self._minimap_display_info = None
+            self._minimap_size = None
+            
+            # 載入檔案
+            if self.waypoint_system.load_map(selected_file):
+                self._load_minimap_for_new_file()
+            else:
+                pass
+                
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+
+    def save_file(self):
+        """保存路徑點"""
+        try:
+            filename, ok = QFileDialog.getSaveFileName(
+                self,
+                "保存路徑檔",
+                "data/",
+                "JSON Files (*.json)"
+            )
+            
+            if not filename:
+                return
+            
+            # 確保副檔名
+            if not filename.endswith('.json'):
+                filename += '.json'
+            
+            # 修正：使用相對路徑
+            if filename.startswith('data/'):
+                relative_filename = filename[5:]  # 移除 "data/" 前綴
+            elif filename.startswith('data\\'):
+                relative_filename = filename[5:]  # 移除 "data\" 前綴
+            else:
+                relative_filename = filename
+            
+            success = self.waypoint_system.save_data(relative_filename)
+            
+            if success:
+                self.status_label.setText(f"已保存: {relative_filename}")
+            else:
+                self.status_label.setText("保存失敗")
+        except Exception as e:
+            self.status_label.setText(f"保存失敗: {e}")
