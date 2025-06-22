@@ -92,18 +92,37 @@ def get_available_map_files():
 class MonsterDetectionGUI(QMainWindow):
     """怪物檢測GUI - PyQt5版本：使用文字列表顯示匹配結果"""
     
-    def __init__(self, ro_helper):
+    def __init__(self, ro_helper, config=None):
         """初始化 GUI"""
         super().__init__()
         
         # 保存 RO Helper 引用
         self.ro_helper = ro_helper
         
+        # ✅ 從設定檔讀取參數
+        if config:
+            gui_config = config.get('gui', {})
+            self.detection_interval = gui_config.get('detection_interval', 0.1)
+            self.gui_update_interval = gui_config.get('gui_update_interval', 200)
+            self.cooldown_interval = gui_config.get('cooldown_interval', 0.7)
+            self.display_timeout = gui_config.get('display_timeout', 3)
+            self.sleep_time = gui_config.get('sleep_time', 0.001)
+            self.error_sleep_time = gui_config.get('error_sleep_time', 0.01)
+            self.wait_time = gui_config.get('wait_time', 0.2)
+        else:
+            # 預設值
+            self.detection_interval = 0.1
+            self.gui_update_interval = 200
+            self.cooldown_interval = 0.7
+            self.display_timeout = 3
+            self.sleep_time = 0.001
+            self.error_sleep_time = 0.01
+            self.wait_time = 0.2
+        
         # 初始化變數
         self.is_running = False
         self.last_frame = None
         self.last_detection_time = 0
-        self.detection_interval = 0.1  # 100ms
         self.monster_positions = []
         self.current_map = None
         self.map_data = None
@@ -174,7 +193,6 @@ class MonsterDetectionGUI(QMainWindow):
         self._result_queue = None
         
         # ✅ 新增：效能優化相關
-        self.gui_update_interval = 200  # 5 FPS
         self.last_gui_update = 0
         self.detection_queue = queue.Queue(maxsize=2)
         self.result_queue = queue.Queue(maxsize=5)
@@ -197,7 +215,11 @@ class MonsterDetectionGUI(QMainWindow):
             ro_helper.auto_combat.is_enabled = False
             ro_helper.auto_combat.auto_hunt_mode = "off"
         
-        self.ui_helper = UITemplateHelper(adb=self.ro_helper.adb, cooldown_interval=0.7)
+        self.ui_helper = UITemplateHelper(adb=self.ro_helper.adb, cooldown_interval=self.cooldown_interval)
+        
+        print("✅ GUI 已初始化")
+        if config:
+            print(f"✅ 已從設定檔載入 GUI 參數: detection_interval={self.detection_interval}")
     
     def _initialize_health_detector(self):
         """初始化血條檢測器"""
@@ -215,7 +237,7 @@ class MonsterDetectionGUI(QMainWindow):
         
         health_info = {}
         if self.health_detector and frame is not None:
-            health_info = self.health_detector.detect_health_mana(frame)
+            health_info = self.health_detector.detect_hud_health_mana(frame)
             
             # 在畫面上顯示血條和魔力條資訊
             if health_info.get('success', False):
@@ -236,7 +258,7 @@ class MonsterDetectionGUI(QMainWindow):
             # 處理血條資訊
             health_info = {}
             if self.health_detector:
-                health_info = self.health_detector.detect_health_mana(frame)
+                health_info = self.health_detector.detect_hud_health_mana(frame)
                 
                 if health_info.get('success', False):
                     hp_percent = health_info.get('hp_percentage', 0)
@@ -259,36 +281,49 @@ class MonsterDetectionGUI(QMainWindow):
     
     def _create_gui(self):
         """建立完整GUI介面"""
-        # 中央小部件
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        
-        # 主要布局
-        main_layout = QHBoxLayout(central_widget)
-        main_layout.setContentsMargins(2, 2, 2, 2)
-        
-        # 左側面板：控制和統計
-        left_panel = QWidget()
-        left_panel.setFixedWidth(300)
-        left_layout = QVBoxLayout(left_panel)
-        
-        # 右側面板：檢測結果
-        right_panel = QWidget()
-        
-        main_layout.addWidget(left_panel)
-        main_layout.addWidget(right_panel)
-        
-        # 建立所有控制面板
-        self._create_control_panel(left_layout)
-        self._create_statistics_panel(left_layout)
-        self._create_auto_hunt_controls(left_layout)
-        
-        # 右側檢測結果
-        self._create_detection_results_display(right_panel)
-        
-        # 狀態欄
-        self.status_bar = self.statusBar()
-        self.status_bar.showMessage("準備就緒")
+        try:
+            # 中央小部件
+            central_widget = QWidget()
+            self.setCentralWidget(central_widget)
+            
+            # 主要布局
+            main_layout = QHBoxLayout(central_widget)
+            main_layout.setContentsMargins(2, 2, 2, 2)
+            
+            # 左側面板：控制和統計
+            left_panel = QWidget()
+            left_panel.setFixedWidth(300)
+            left_layout = QVBoxLayout(left_panel)
+            
+            # 右側面板：檢測結果
+            right_panel = QWidget()
+            
+            main_layout.addWidget(left_panel)
+            main_layout.addWidget(right_panel)
+            
+            # 建立所有控制面板
+            self._create_control_panel(left_layout)
+            self._create_statistics_panel(left_layout)
+            self._create_auto_hunt_controls(left_layout)
+            
+            # 右側檢測結果
+            self._create_detection_results_display(right_panel)
+            
+            # 狀態欄
+            self.status_bar = self.statusBar()
+            self.status_bar.showMessage("準備就緒")
+            
+            # 加入除錯資訊
+            print(f"✅ GUI 已初始化")
+            print(f"  - dynamic_button_area 存在: {hasattr(self, 'dynamic_button_area')}")
+            if hasattr(self, 'dynamic_button_area'):
+                print(f"  - dynamic_button_area 類型: {type(self.dynamic_button_area)}")
+                print(f"  - dynamic_button_layout 存在: {hasattr(self, 'dynamic_button_layout')}")
+            
+        except Exception as e:
+            print(f"❌ GUI 創建失敗: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _create_control_panel(self, parent_layout):
         """✅ 混合布局：主要按鈕垂直，小按鈕水平"""
@@ -340,6 +375,18 @@ class MonsterDetectionGUI(QMainWindow):
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.clicked.connect(command)
             button_layout.addWidget(btn)
+        
+        # ✅ 添加動態按鈕區域
+        self.dynamic_button_area = QGroupBox("路徑編輯")
+        control_layout.addWidget(self.dynamic_button_area)
+        
+        self.dynamic_button_layout = QHBoxLayout(self.dynamic_button_area)
+        
+        # ✅ 添加預設提示標籤，讓區域更明顯
+        self.waypoint_hint_label = QLabel("點擊下方按鈕開啟路徑編輯器")
+        self.waypoint_hint_label.setStyleSheet("color: gray; font-style: italic;")
+        self.dynamic_button_layout.addWidget(self.waypoint_hint_label)
+        self.dynamic_button_layout.addStretch()  # 右對齊
     
     def _create_detection_results_display(self, parent):
         """優化檢測結果顯示區域（移除即時檢測頁籤，只保留詳細資訊與歷史）"""
@@ -361,20 +408,63 @@ class MonsterDetectionGUI(QMainWindow):
     def add_waypoint_button(self, button_text: str, command_function):
         """✅ 修正版：動態按鈕添加"""
         try:
+            print(f"🔧 開始添加按鈕: {button_text}")
+            print(f"  - dynamic_button_area 存在: {hasattr(self, 'dynamic_button_area')}")
+            
             if hasattr(self, 'dynamic_button_area') and self.dynamic_button_area:
+                print(f"  - 創建按鈕物件...")
                 self.waypoint_button = QPushButton(button_text)
+                
                 # ✅ 關鍵修改6：動態按鈕也要Expanding
                 self.waypoint_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
                 self.waypoint_button.setMinimumWidth(70)  # 降低最小寬度
-                self.waypoint_button.clicked.connect(command_function)
-                self.dynamic_button_layout.addWidget(self.waypoint_button)
-                print(f"✅ 路徑編輯按鈕已添加: {button_text}")
-                return True
                 
-            return False
-            
+                print(f"  - 設置按鈕點擊事件...")
+                # 包裝 command_function 以加入除錯資訊
+                def wrapped_command():
+                    try:
+                        print(f"🖱️ 按鈕被點擊: {button_text}")
+                        print(f"🔧 執行函數: {command_function}")
+                        command_function()
+                        print(f"✅ 函數執行完成: {button_text}")
+                    except Exception as e:
+                        print(f"❌ 按鈕點擊時發生錯誤: {e}")
+                        import traceback
+                        traceback.print_exc()
+                
+                self.waypoint_button.clicked.connect(wrapped_command)
+                
+                print(f"  - 隱藏提示標籤...")
+                # ✅ 隱藏提示標籤
+                if hasattr(self, 'waypoint_hint_label'):
+                    self.waypoint_hint_label.hide()
+                
+                print(f"  - 將按鈕添加到佈局...")
+                # ✅ 清除現有佈局並重新添加按鈕
+                while self.dynamic_button_layout.count():
+                    child = self.dynamic_button_layout.takeAt(0)
+                    if child.widget():
+                        child.widget().setParent(None)
+                
+                # ✅ 重新添加按鈕到佈局
+                self.dynamic_button_layout.addWidget(self.waypoint_button)
+                self.dynamic_button_layout.addStretch()  # 右對齊
+                
+                print(f"✅ 路徑編輯按鈕已添加: {button_text}")
+                print(f"  - 按鈕物件: {self.waypoint_button}")
+                print(f"  - 按鈕可見: {self.waypoint_button.isVisible()}")
+                print(f"  - 按鈕大小: {self.waypoint_button.size()}")
+                print(f"  - 佈局項目數: {self.dynamic_button_layout.count()}")
+                return True
+            else:
+                print(f"❌ dynamic_button_area 不存在或為空")
+                print(f"  - dynamic_button_area: {getattr(self, 'dynamic_button_area', '不存在')}")
+                return False
+                
         except Exception as e:
             print(f"❌ 添加按鈕失敗: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def _create_detailed_info_tab(self):
@@ -771,7 +861,7 @@ class MonsterDetectionGUI(QMainWindow):
             self.map_combo = QComboBox()
             self.map_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)  # 改為Expanding
             if hasattr(self.ro_helper, 'waypoint_system'):
-                available_files = self.ro_helper.waypoint_system.get_available_map_files()
+                available_files = self.ro_helper.waypoint_system.get_files()
                 self.map_combo.addItems(available_files)
             file_control_layout.addWidget(self.map_combo)
             
@@ -793,7 +883,7 @@ class MonsterDetectionGUI(QMainWindow):
             
             edit_btn = QPushButton("🗺️ 編輯路徑")
             edit_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)  # 改為Expanding
-            edit_btn.clicked.connect(self._open_waypoint_editor)
+            edit_btn.clicked.connect(self._open_editor)
             buttons_layout.addWidget(edit_btn, 1, 0, 1, 2)  # 跨兩列
             
             # 自動狩獵控制區域
@@ -832,10 +922,10 @@ class MonsterDetectionGUI(QMainWindow):
         except Exception as e:
             print(f"⚠️ 添加地圖管理功能失敗: {e}")
 
-    def _open_waypoint_editor(self):
+    def _open_editor(self):
         """開啟路徑編輯器"""
         try:
-            self.ro_helper.open_waypoint_editor()
+            self.ro_helper.open_editor()
         except Exception as e:
             print(f"⚠️ 開啟路徑編輯器失敗: {e}")
 
@@ -848,7 +938,7 @@ class MonsterDetectionGUI(QMainWindow):
                 return
             
             # 載入到waypoint_system
-            success = self.ro_helper.waypoint_system.load_specific_map(filename)
+            success = self.ro_helper.waypoint_system.load_map(filename)
             if success:
                 self.status_bar.showMessage(f"✅ 主視窗載入地圖: {filename}")
                 print(f"✅ 主視窗載入地圖: {filename}")
@@ -873,7 +963,7 @@ class MonsterDetectionGUI(QMainWindow):
                 return
             
             file_path = os.path.join("data", filename)
-            self.ro_helper.waypoint_system.save_map_data(file_path)
+            self.ro_helper.waypoint_system.save_data(file_path)
             print(f"💾 地圖已保存: {filename}")
             self.status_bar.showMessage(f"💾 地圖已保存: {filename}")
             
@@ -969,10 +1059,10 @@ class MonsterDetectionGUI(QMainWindow):
                     display_frame = frame.copy()
                     
                     # 執行HUD檢測並繪製辨識框
-                    display_frame = self._draw_hud_detection(display_frame)
+                    display_frame = self._draw_hud_health_mana_detection(display_frame)
                     
                     # 執行血條檢測
-                    display_frame = self.locate_and_draw_health_bar(display_frame)
+                    display_frame = self.detect_character_overhead_health(display_frame)
                     
                     # 繪製小地圖（使用 tracker 的灰階圖）
                     minimap_rect = self.ro_helper.tracker._find_minimap_with_subpixel_accuracy(frame)
@@ -1065,14 +1155,14 @@ class MonsterDetectionGUI(QMainWindow):
         except Exception as e:
             print(f"❌ 區域繪製失敗: {e}")
 
-    def _draw_hud_detection(self, frame):
-        """繪製HUD辨識框"""
+    def _draw_hud_health_mana_detection(self, frame):
+        """繪製HUD血魔條辨識框（左下角UI）"""
         try:
             if not hasattr(self, 'health_detector') or self.health_detector is None:
                 return frame
             
             # 執行HUD檢測
-            detection_result = self.health_detector.detect_health_mana(frame)
+            detection_result = self.health_detector.detect_hud_health_mana(frame)
             
             # 繪製HUD主框
             if detection_result.get('hud_rect'):
@@ -1105,35 +1195,36 @@ class MonsterDetectionGUI(QMainWindow):
             return frame
             
         except Exception as e:
-            print(f"❌ HUD辨識框繪製失敗: {e}")
+            print(f"❌ HUD血魔條辨識框繪製失敗: {e}")
             return frame
 
-    def locate_and_draw_health_bar(self, frame, templates_dir="templates/MainScreen"):
-        if frame is None or frame.size == 0:
+    def detect_character_overhead_health(self, frame):
+        """
+        調用 HealthManaDetector 中的方法來檢測角色頭頂血條，並在畫面上繪製結果。
+        """
+        if not hasattr(self, 'health_detector') or self.health_detector is None:
             return frame
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        # 只針對血條紅色 #D00404
-        red_lower = np.array([0, 230, 180])   # H=0, S=230, V=180
-        red_upper = np.array([3, 255, 255])   # H=3, S=255, V=255
-        red_mask = cv2.inRange(hsv, red_lower, red_upper)
-        contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        best_rect = None
-        best_area = 0
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if 29 < area < 598:
-                x, y, w, h = cv2.boundingRect(contour)
-                aspect_ratio = w / h
-                # 移除 y > 300 條件，只保留寬度、長寬比等
-                if 2 < aspect_ratio < 15 and 60 < w < 100:
-                    if area > best_area:
-                        best_area = area
-                        best_rect = (x, y, w, h)
-        if best_rect:
-            x, y, w, h = best_rect
-            cv2.rectangle(frame, (x, y), (x+w, y+h), (0,255,0), 2)
-            cv2.putText(frame, 'HealthBar', (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
-        return frame
+
+        try:
+            # 呼叫外部檢測器
+            health_bars = self.health_detector.detect_character_overhead_health(frame)
+
+            # 在畫面上繪製所有找到的血條
+            if health_bars:
+                # 創建一個副本以避免修改原始幀
+                overlay_frame = frame.copy()
+                for i, (x, y, w, h) in enumerate(health_bars):
+                    # 繪製綠色矩形
+                    cv2.rectangle(overlay_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                    # 繪製標籤
+                    cv2.putText(overlay_frame, f'HP_{i}', (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                return overlay_frame
+            else:
+                return frame # 如果沒有找到，返回原來的幀
+
+        except Exception as e:
+            print(f"❌ 在 GUI 中繪製頭頂血條時發生錯誤: {e}")
+            return frame
 
     def _match_template(self, img, template_path, threshold=0.7):
         """模板匹配輔助函數"""
@@ -1528,7 +1619,7 @@ class MonsterDetectionGUI(QMainWindow):
             # 處理血條資訊
             health_info = {}
             if self.health_detector:
-                health_info = self.health_detector.detect_health_mana(frame)
+                health_info = self.health_detector.detect_hud_health_mana(frame)
                 
                 if health_info.get('success', False):
                     hp_percent = health_info.get('hp_percentage', 0)

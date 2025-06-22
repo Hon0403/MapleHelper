@@ -11,7 +11,7 @@ from includes.grid_utils import GridUtils
 class SimpleCombat:
     """基於搜索結果[5]的AI Bot移動系統"""
     
-    def __init__(self):
+    def __init__(self, config=None):
         """初始化戰鬥系統"""
         self.is_enabled = False
         self.auto_hunt_mode = "off"
@@ -20,9 +20,59 @@ class SimpleCombat:
         self.controller = None
         self.waypoint_system = None
         
-        # 初始化攻擊間隔
-        self.attack_interval = 1.0  # 預設1秒
-        self.movement_interval = 0.5  # 預設0.5秒
+        # ✅ 從設定檔讀取參數
+        if config:
+            combat_config = config.get('combat', {})
+            self.attack_interval = combat_config.get('attack_cooldown', 1.0)
+            self.movement_interval = combat_config.get('movement_interval', 0.5)
+            
+            # 初始化戰鬥設定
+            self.hunt_settings = {
+                'combat_mode': 'safe_area',
+                'attack_range': combat_config.get('attack_range', 0.4),
+                'approach_distance': combat_config.get('approach_distance', 0.1),
+                'retreat_distance': combat_config.get('retreat_distance', 0.05),
+                'attack_cooldown': combat_config.get('attack_cooldown', 1.5),
+                'movement_speed': combat_config.get('movement_speed', 0.8),
+                'use_waypoints': False,
+                'patrol_mode': 'safe_area',
+                'max_chase_distance': combat_config.get('max_chase_distance', 0.15),
+                'return_to_safe': True
+            }
+            
+            # 動作相關參數
+            self.action_timeout = combat_config.get('action_timeout', 2.0)
+            self.move_duration_min = combat_config.get('move_duration_min', 0.2)
+            self.move_duration_max = combat_config.get('move_duration_max', 0.5)
+            self.emergency_move_duration = combat_config.get('emergency_move_duration', 0.3)
+            self.forbidden_threshold = combat_config.get('forbidden_threshold', 0.02)
+            self.same_position_tolerance = combat_config.get('same_position_tolerance', 0.005)
+        else:
+            # 預設值
+            self.attack_interval = 1.0
+            self.movement_interval = 0.5
+            
+            # 初始化戰鬥設定
+            self.hunt_settings = {
+                'combat_mode': 'safe_area',
+                'attack_range': 0.4,
+                'approach_distance': 0.1,
+                'retreat_distance': 0.05,
+                'attack_cooldown': 1.5,
+                'movement_speed': 0.8,
+                'use_waypoints': False,
+                'patrol_mode': 'safe_area',
+                'max_chase_distance': 0.15,
+                'return_to_safe': True
+            }
+            
+            # 動作相關參數
+            self.action_timeout = 2.0
+            self.move_duration_min = 0.2
+            self.move_duration_max = 0.5
+            self.emergency_move_duration = 0.3
+            self.forbidden_threshold = 0.02
+            self.same_position_tolerance = 0.005
         
         # 初始化怪物檢測器
         try:
@@ -39,25 +89,13 @@ class SimpleCombat:
         self.skill_rotation = ['attack']  # 預設只有普通攻擊
         self.current_skill_index = 0
         
-        # 初始化戰鬥設定
-        self.hunt_settings = {
-            'combat_mode': 'safe_area',
-            'attack_range': 0.4,
-            'approach_distance': 0.1,
-            'retreat_distance': 0.05,
-            'attack_cooldown': 1.5,
-            'movement_speed': 0.8,
-            'use_waypoints': False,
-            'patrol_mode': 'safe_area',
-            'max_chase_distance': 0.15,
-            'return_to_safe': True
-        }
-        
         # 初始化控制器
         self._init_adb()
         
         print("⚔️ 戰鬥系統已初始化")
         print(f"🔍 怪物檢測器狀態: {'已初始化' if self.monster_detector else '未初始化'}")
+        if config:
+            print(f"✅ 已從設定檔載入戰鬥參數: attack_range={self.hunt_settings['attack_range']}")
 
         # ✅ 添加動作狀態管理
         self.current_action = None  # 當前執行的動作

@@ -1,9 +1,32 @@
-# configs/bluestacks.yaml (需用UTF-8編碼保存)
-capturer:
-  window:
-    title: "BlueStacks App Player"
-  capture_region: [0, 0, 1920, 1080]
+# configs/bluestacks.yaml - 集中管理所有參數 (需用UTF-8編碼保存)
 
+# 基本設定
+app:
+  window_title: "BlueStacks App Player"
+  capture_region: [0, 0, 1920, 1080]
+  detection_threshold: 0.3
+  update_interval: 3000
+  auto_save: true
+
+# 畫面捕捉器設定
+capturer:
+  cache_duration: 0.1              # 畫面緩存時間 (秒)
+  min_capture_interval: 0.05       # 最小捕捉間隔 (20 FPS)
+  max_capture_interval: 0.2        # 最大捕捉間隔 (5 FPS)
+  timeout: 2                       # ADB 命令超時時間 (秒)
+  max_errors: 5                    # 最大錯誤次數
+  error_reset_time: 10             # 錯誤計數重置時間 (秒)
+
+# 主循環更新頻率設定
+main_loop:
+  frame_capture: 0.05              # 畫面捕捉頻率 (20 FPS)
+  position_tracking: 0.1           # 位置追蹤頻率 (10 FPS)
+  combat_update: 0.2               # 戰鬥更新頻率 (5 FPS)
+  health_check: 1.0                # 血條檢查頻率 (1 FPS)
+  status_update: 0.5               # 狀態更新頻率 (2 FPS)
+  sleep_time: 0.02                 # 主循環睡眠時間 (秒)
+
+# 模板匹配設定
 template_matcher:
   corner_templates:
     topleft: "minimap/topleft.png"
@@ -11,18 +34,86 @@ template_matcher:
     bottomleft: "minimap/bottom_left.png"
     bottomright: "minimap/bottom_right.png"
   player_template_name: "minimap/player_marker.png"
-  player_threshold: 0.65          # 可以適當降低閾值，因為顏色過濾後干擾減少
-  smooth_factor: 0.8
-  # --- 新增 HSV 過濾配置 ---
-  use_hsv_filter: true          # 啟用 HSV 過濾
-  # 黃色的 HSV 範圍 (H: 色調, S: 飽和度, V: 亮度)
-  # 需要根據你遊戲中實際的黃色調整！
-  hsv_yellow_lower: [20, 100, 100] # H: 20-35 通常是黃色
-  hsv_yellow_upper: [35, 255, 255] # S和V可以設高一點以排除淺色/暗色干擾
+  player_threshold: 0.65           # 角色模板匹配閾值
+  smooth_factor: 0.8               # 平滑因子
+  use_hsv_filter: true             # 啟用 HSV 過濾
+  hsv_yellow_lower: [20, 100, 100] # 黃色 HSV 下限
+  hsv_yellow_upper: [35, 255, 255] # 黃色 HSV 上限
 
+# UI 模板路徑
 ui_templates:
   menu: "templates/MainScreen/MenuUi.png"
   team: "templates/MainScreen/TeamUi.png"
   newui: "templates/MainScreen/NewUi.png"
   health: "templates/MainScreen/Health.png"
   closeui: "templates/MainScreen/CloseUi.png"
+
+# 血條偵測設定
+health_detector:
+  border_template: "templates/MainScreen/HealthBar.png"  # 血條邊框模板
+  threshold: 0.6                   # 模板匹配閾值
+  canny_low: 30                    # Canny 邊緣低閾值
+  canny_high: 100                  # Canny 邊緣高閾值
+  color_ratio_threshold: 0.1       # 顏色像素比例
+  min_color_pixels: 20             # 最小顏色像素數
+  hud_threshold: 0.3               # HUD 模板匹配閾值
+  bar_threshold: 0.2               # 血條模板匹配閾值
+  cache_timeout: 1.0               # 快取超時時間 (秒)
+  overlap_threshold: 0.3           # 重疊檢測閾值
+
+# 戰鬥系統設定
+combat:
+  attack_range: 0.4                # 攻擊範圍
+  approach_distance: 0.1           # 接近距離
+  retreat_distance: 0.05           # 撤退距離
+  attack_cooldown: 1.5             # 攻擊冷卻時間 (秒)
+  movement_speed: 0.8              # 移動速度
+  max_chase_distance: 0.15         # 最大追擊距離
+  movement_interval: 0.5           # 移動間隔 (秒)
+  action_timeout: 2.0              # 動作超時時間 (秒)
+  move_duration_min: 0.2           # 最小移動時間 (秒)
+  move_duration_max: 0.5           # 最大移動時間 (秒)
+  emergency_move_duration: 0.3     # 緊急移動時間 (秒)
+  forbidden_threshold: 0.02        # 禁區檢測閾值
+  same_position_tolerance: 0.005   # 相同位置容差
+
+# 路徑點系統設定
+waypoint_system:
+  tolerance: 0.05                  # 路徑點容差
+  obstacle_size: [0.05, 0.05]      # 障礙物大小
+  action_zone_size: [0.03, 0.03]   # 動作區域大小
+  delete_threshold: 0.05           # 刪除閾值
+  area_mark_step: 0.01             # 區域標記步長
+
+# 路徑點編輯器設定
+waypoint_editor:
+  mouse_move_threshold: 5          # 滑鼠移動閾值 (像素)
+  brush_size_range: [5, 50]        # 畫筆大小範圍
+  grid_size: 20                    # 網格大小 (像素)
+  delete_distance: 0.03            # 刪除距離
+
+# GUI 設定
+gui:
+  detection_interval: 0.1          # 偵測間隔 (秒)
+  gui_update_interval: 200         # GUI 更新間隔 (毫秒)
+  cooldown_interval: 0.7           # 冷卻間隔 (秒)
+  display_timeout: 3               # 顯示超時時間 (秒)
+  sleep_time: 0.001                # GUI 睡眠時間 (秒)
+  error_sleep_time: 0.01           # 錯誤時睡眠時間 (秒)
+  wait_time: 0.2                   # 等待時間 (秒)
+
+# 顏色設定 (HSV 範圍)
+colors:
+  green_lower: [35, 100, 50]       # 綠色下限 (玩家血條)
+  green_upper: [85, 255, 255]      # 綠色上限
+  red_lower1: [0, 120, 70]         # 紅色下限1 (怪物血條)
+  red_upper1: [10, 255, 255]       # 紅色上限1
+  red_lower2: [170, 120, 70]       # 紅色下限2 (怪物血條)
+  red_upper2: [180, 255, 255]      # 紅色上限2
+
+# 效能設定
+performance:
+  max_loop_time: 0.02              # 最大循環時間 (秒)
+  min_sleep_time: 0.001            # 最小睡眠時間 (秒)
+  fps_target: 50                   # 目標 FPS
+  memory_limit: 100                # 記憶體限制 (MB)
