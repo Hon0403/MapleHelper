@@ -3,309 +3,432 @@
 import time
 import random
 import numpy as np
-from includes.simple_template_utils import monster_detector
+from includes.simple_template_utils import get_monster_detector
 from includes.movement_utils import MovementUtils
 from includes.grid_utils import GridUtils
+from includes.log_utils import get_logger
 
 
 class SimpleCombat:
     """基於搜索結果[5]的AI Bot移動系統"""
     
-    def __init__(self, config=None):
-        """初始化戰鬥系統"""
+    def __init__(self, config=None, monster_detector=None):
+        """初始化戰鬥系統 - 支援共用檢測器"""
+        # 載入設定
+        self.config = config or {}
+        
+        # 戰鬥狀態
         self.is_enabled = False
-        self.auto_hunt_mode = "off"
-        self.auto_hunt_target = None
+        self.auto_hunt_mode = False
+        self.current_action = None
+        self.action_start_time = 0
+        self.action_duration = 0
         self.last_attack_time = 0
+        
+        # 怪物檢測器 - 優先使用傳入的實例
+        self.monster_detector = monster_detector
+        if not self.monster_detector:
+            try:
+                from includes.simple_template_utils import get_monster_detector
+                self.monster_detector = get_monster_detector(config)
+                if not self.monster_detector:
+                    # 兼容舊版本：再次嘗試獲取檢測器
+                    try:
+                        self.monster_detector = get_monster_detector(self.config)
+                    except:
+                        self.monster_detector = None
+            except Exception as e:
+                self.logger = get_logger("SimpleCombat")
+                self.logger.error(f"怪物檢測器初始化失敗: {e}")
+        
+        # 初始化日誌
+        self.logger = get_logger("SimpleCombat")
+        
+        # 血條追蹤設定
+        # ✅ 分離的血條檢測器
+        self.hud_health_detector = None  # HUD血條檢測器
+        self.character_health_detector = None  # 角色血條檢測器
+        self.use_health_bar_tracking = config.get('use_health_bar_tracking', True)
+        self.health_detection_interval = config.get('health_detection_interval', 0.1)
+        self.last_health_detection_time = 0
+        self.character_health_bar_pos = None
+        
+        # 向後兼容性
+        self.health_detector = None
+        self.last_health_detection_time = 0
+        self.health_detection_interval = config.get('combat', {}).get('health_detection_interval', 0.1)
+        
+        # 從設定檔載入戰鬥參數
+        combat_config = config.get('combat', {})
+        self.hunt_settings = {
+            'attack_range': combat_config.get('attack_range', 0.4),
+            'approach_distance': combat_config.get('approach_distance', 0.1),
+            'retreat_distance': combat_config.get('retreat_distance', 0.05),
+            'attack_cooldown': combat_config.get('attack_cooldown', 1.5),
+            'movement_speed': combat_config.get('movement_speed', 0.8),
+            'max_chase_distance': combat_config.get('max_chase_distance', 0.15),
+            'movement_interval': combat_config.get('movement_interval', 0.5),
+            'action_timeout': combat_config.get('action_timeout', 2.0),
+            'move_duration_min': combat_config.get('move_duration_min', 0.2),
+            'move_duration_max': combat_config.get('move_duration_max', 0.5),
+            'emergency_move_duration': combat_config.get('emergency_move_duration', 0.3),
+            'forbidden_threshold': combat_config.get('forbidden_threshold', 0.02),
+            'same_position_tolerance': combat_config.get('same_position_tolerance', 0.005)
+        }
+        
+        # 控制器和路徑點系統
         self.controller = None
         self.waypoint_system = None
-        
-        # ✅ 從設定檔讀取參數
-        if config:
-            combat_config = config.get('combat', {})
-            self.attack_interval = combat_config.get('attack_cooldown', 1.0)
-            self.movement_interval = combat_config.get('movement_interval', 0.5)
-            
-            # 初始化戰鬥設定
-            self.hunt_settings = {
-                'combat_mode': 'safe_area',
-                'attack_range': combat_config.get('attack_range', 0.4),
-                'approach_distance': combat_config.get('approach_distance', 0.1),
-                'retreat_distance': combat_config.get('retreat_distance', 0.05),
-                'attack_cooldown': combat_config.get('attack_cooldown', 1.5),
-                'movement_speed': combat_config.get('movement_speed', 0.8),
-                'use_waypoints': False,
-                'patrol_mode': 'safe_area',
-                'max_chase_distance': combat_config.get('max_chase_distance', 0.15),
-                'return_to_safe': True
-            }
-            
-            # 動作相關參數
-            self.action_timeout = combat_config.get('action_timeout', 2.0)
-            self.move_duration_min = combat_config.get('move_duration_min', 0.2)
-            self.move_duration_max = combat_config.get('move_duration_max', 0.5)
-            self.emergency_move_duration = combat_config.get('emergency_move_duration', 0.3)
-            self.forbidden_threshold = combat_config.get('forbidden_threshold', 0.02)
-            self.same_position_tolerance = combat_config.get('same_position_tolerance', 0.005)
-        else:
-            # 預設值
-            self.attack_interval = 1.0
-            self.movement_interval = 0.5
-            
-            # 初始化戰鬥設定
-            self.hunt_settings = {
-                'combat_mode': 'safe_area',
-                'attack_range': 0.4,
-                'approach_distance': 0.1,
-                'retreat_distance': 0.05,
-                'attack_cooldown': 1.5,
-                'movement_speed': 0.8,
-                'use_waypoints': False,
-                'patrol_mode': 'safe_area',
-                'max_chase_distance': 0.15,
-                'return_to_safe': True
-            }
-            
-            # 動作相關參數
-            self.action_timeout = 2.0
-            self.move_duration_min = 0.2
-            self.move_duration_max = 0.5
-            self.emergency_move_duration = 0.3
-            self.forbidden_threshold = 0.02
-            self.same_position_tolerance = 0.005
-        
-        # 初始化怪物檢測器
-        try:
-            from includes.simple_template_utils import monster_detector
-            self.monster_detector = monster_detector
-            if not self.monster_detector:
-                raise RuntimeError("怪物檢測器初始化失敗")
-            print("✅ 怪物檢測器已成功載入")
-        except Exception as e:
-            print(f"❌ 怪物檢測器初始化失敗: {e}")
-            self.monster_detector = None
-        
-        # 初始化技能輪換
-        self.skill_rotation = ['attack']  # 預設只有普通攻擊
-        self.current_skill_index = 0
-        
-        # 初始化控制器
-        self._init_adb()
-        
-        print("⚔️ 戰鬥系統已初始化")
-        print(f"🔍 怪物檢測器狀態: {'已初始化' if self.monster_detector else '未初始化'}")
-        if config:
-            print(f"✅ 已從設定檔載入戰鬥參數: attack_range={self.hunt_settings['attack_range']}")
 
-        # ✅ 添加動作狀態管理
-        self.current_action = None  # 當前執行的動作
-        self.action_start_time = 0  # 動作開始時間
-        self.action_duration = 0    # 動作持續時間
-
-    def _init_adb(self):
-        """初始化ADB控制器"""
+    def _initialize_controller(self):
+        """控制器初始化已移除 - 專注楓之谷 Worlds 原生遊戲"""
         try:
-            from modules.simple_adb import SimpleADB
-            self.controller = SimpleADB()
-            
-            # 確保ADB連接
-            if not self.controller.is_connected:
-                print("🔄 嘗試重新連接ADB...")
-                self.controller.reconnect()
-            
-            if self.controller.is_connected:
-                print("✅ ADB控制器已連接")
-            else:
-                print("❌ ADB控制器連接失敗")
+            # ADB 控制器已移除，楓之谷 Worlds 使用原生 PC 控制
+            self.controller = None
+            self.logger.info("楓之谷 Worlds 原生遊戲 - 無需 ADB 控制器")
                 
         except Exception as e:
-            print(f"❌ 初始化ADB控制器失敗: {e}")
-            self.controller = None
+            self.logger.error(f"控制器初始化處理失敗: {e}")
 
     def set_waypoint_system(self, waypoint_system):
         """設置路徑點系統"""
         try:
             self.waypoint_system = waypoint_system
-            print("✅ 路徑點系統已設置")
-            return True
             
         except Exception as e:
-            print(f"❌ 設置路徑點系統失敗: {e}")
-            return False
+            self.logger.error(f"設置路徑點系統失敗: {e}")
+
+    def set_health_detector(self, health_detector):
+        """設置血條檢測器，用於角色定位（向後兼容）"""
+        try:
+            self.health_detector = health_detector
+            # 向後兼容：將統一檢測器同時設置為角色血條檢測器
+            if hasattr(health_detector, 'detect_character_overhead_health'):
+                self.character_health_detector = health_detector
+            
+        except Exception as e:
+            self.logger.error(f"設置血條檢測器失敗: {e}")
+    
+    def set_hud_health_detector(self, hud_health_detector):
+        """設置HUD血條檢測器"""
+        try:
+            self.hud_health_detector = hud_health_detector
+            self.logger.info("✅ HUD血條檢測器已設置")
+            
+        except Exception as e:
+            self.logger.error(f"設置HUD血條檢測器失敗: {e}")
+    
+    def set_character_health_detector(self, character_health_detector):
+        """設置角色血條檢測器，用於角色定位"""
+        try:
+            self.character_health_detector = character_health_detector
+            # 向後兼容
+            if not self.health_detector:
+                self.health_detector = character_health_detector
+            self.logger.info("✅ 角色血條檢測器已設置")
+            
+        except Exception as e:
+            self.logger.error(f"設置角色血條檢測器失敗: {e}")
+
+    def get_character_position_from_health_bar(self, frame):
+        """✅ 使用血條檢測獲取角色位置"""
+        if not self.use_health_bar_tracking or not self.health_detector or frame is None:
+            return None
+            
+        try:
+            current_time = time.time()
+            
+            # 限制檢測頻率以提升效能
+            if current_time - self.last_health_detection_time < self.health_detection_interval:
+                return self.character_health_bar_pos
+            
+            # 🔧 修復重複檢測：優先使用共享的角色血條檢測結果
+            health_bars = []
+            
+            # 嘗試從GUI的共享結果獲取角色血條（如果可用）
+            if hasattr(self, '_get_shared_health_detection'):
+                try:
+                    health_bars = self._get_shared_health_detection()
+                except:
+                    pass
+            
+            # 如果沒有共享結果，才執行檢測（備用方案）
+            if not health_bars:
+                health_bars = self.health_detector.detect(frame)
+                self.logger.debug(f"戰鬥系統檢測: {len(health_bars)} 隻血條 (備用檢測)")
+            else:
+                self.logger.debug(f"使用共享檢測結果: {len(health_bars)} 隻血條")
+            
+            if health_bars:
+                # 假設第一個檢測到的血條是角色的血條
+                # 在實際應用中，可能需要更智能的篩選邏輯
+                health_bar = health_bars[0]
+                if len(health_bar) == 5:
+                    # 新格式: (x, y, w, h, template_name)
+                    x, y, w, h, _ = health_bar
+                else:
+                    # 舊格式: (x, y, w, h)
+                    x, y, w, h = health_bar
+                
+                # 將血條中心點轉換為相對座標
+                frame_height, frame_width = frame.shape[:2]
+                center_x = (x + w/2) / frame_width
+                center_y = (y + h/2) / frame_height
+                
+                # 角色通常在血條正下方，稍微調整Y座標
+                character_y = center_y + (h * 1.5 / frame_height)  # 血條下方1.5倍血條高度處
+                
+                self.character_health_bar_pos = (center_x, character_y)
+                self.last_health_detection_time = current_time
+                
+
+                return self.character_health_bar_pos
+            
+            # 如果沒有檢測到血條，保持上次的位置
+            return self.character_health_bar_pos
+            
+        except Exception as e:
+            self.logger.error(f"血條位置檢測失敗: {e}")
+            return None
+
+    def calculate_distance_to_monsters(self, frame, character_pos=None, frame_history=None):
+        """✅ 計算角色與怪物的距離 - 使用共享檢測結果避免重複處理"""
+        if frame is None:
+            return []
+            
+        try:
+            # 如果沒有提供角色位置，嘗試從血條檢測獲取
+            if character_pos is None:
+                character_pos = self.get_character_position_from_health_bar(frame)
+            
+            if character_pos is None:
+                return []
+            
+            # ✅ 優先使用GUI檢測循環的共享結果
+            monsters = []
+            if hasattr(self, '_get_shared_monster_detection'):
+                # 嘗試從主應用獲取共享檢測結果
+                shared_results = self._get_shared_monster_detection()
+                if shared_results and len(shared_results) > 0:
+                    monsters = shared_results
+                    self.logger.debug(f"使用共享檢測結果: {len(monsters)} 隻怪物")
+            
+            # ✅ 如果沒有共享結果，才執行檢測（降低頻率）
+            if not monsters and self.monster_detector:
+                if not hasattr(self, '_last_detection_time'):
+                    self._last_detection_time = 0
+                
+                current_time = time.time()
+                # 戰鬥系統檢測頻率降低到5FPS（0.2秒間隔）
+                if current_time - self._last_detection_time >= 0.2:
+                    if hasattr(self.monster_detector, 'detect_monsters'):
+                        if frame_history and len(frame_history) > 0:
+                            monsters = self.monster_detector.detect_monsters(frame, frame_history=frame_history)
+                        else:
+                            monsters = self.monster_detector.detect_monsters(frame)
+                    else:
+                        monsters = self.monster_detector.detect_monsters(frame)
+                    
+                    self._last_detection_time = current_time
+                    self.logger.debug(f"戰鬥系統檢測: {len(monsters)} 隻怪物 (備用檢測)")
+                else:
+                    # 使用上次檢測結果
+                    monsters = getattr(self, '_last_monsters', [])
+            
+            if not monsters:
+                return []
+            
+            # 緩存檢測結果
+            self._last_monsters = monsters
+            
+            # 計算每個怪物與角色的距離
+            monster_distances = []
+            frame_height, frame_width = frame.shape[:2]
+            
+            for monster in monsters:
+                # 獲取怪物中心點
+                if isinstance(monster, dict):
+                    monster_x = monster.get('center_x', monster.get('x', 0))
+                    monster_y = monster.get('center_y', monster.get('y', 0))
+                    
+                    # 如果使用position屬性
+                    if 'position' in monster:
+                        monster_x, monster_y = monster['position']
+                        
+                    confidence = monster.get('confidence', 0.0)
+                    detection_method = monster.get('detection_method', 'shared_result')
+                    
+                elif isinstance(monster, (list, tuple)) and len(monster) >= 4:
+                    x, y, w, h = monster[:4]
+                    monster_x = x + w/2
+                    monster_y = y + h/2
+                    confidence = monster[4] if len(monster) > 4 else 0.0
+                    detection_method = 'legacy'
+                else:
+                    continue
+                
+                # 轉換為相對座標
+                monster_rel_x = monster_x / frame_width
+                monster_rel_y = monster_y / frame_height
+                
+                # 計算歐式距離
+                distance = self._calculate_distance(character_pos, (monster_rel_x, monster_rel_y))
+                
+                monster_distances.append({
+                    'monster': monster,
+                    'position': (monster_rel_x, monster_rel_y),
+                    'distance': distance,
+                    'confidence': confidence,
+                    'detection_method': detection_method
+                })
+            
+            # 按距離排序，最近的在前面
+            monster_distances.sort(key=lambda x: x['distance'])
+            
+            return monster_distances
+            
+        except Exception as e:
+            self.logger.error(f"計算怪物距離失敗: {e}")
+            return []
 
     def start(self):
-        """修正版：只有在明確調用時才啟動"""
+        """啟動戰鬥系統"""
         try:
-            print("🔄 嘗試啟動戰鬥系統...")
+            # 初始化控制器
+            self._initialize_controller()
             
-            # 檢查路徑點系統
+            # 檢查必要組件
             if not self.waypoint_system:
-                print("❌ 路徑點系統未設置")
+                self.logger.error("路徑點系統未設置")
                 return False
-
-            # 獲取戰鬥模式
-            combat_mode = self.hunt_settings.get('combat_mode', 'waypoint')
-
-            if combat_mode == 'safe_area':
-                # 安全區域模式：檢查區域標記
-                if not hasattr(self.waypoint_system, 'area_grid') or not self.waypoint_system.area_grid:
-                    print("❌ 安全區域模式需要區域標記")
-                    return False
-
-                walkable_areas = [k for k, v in self.waypoint_system.area_grid.items() if v == "walkable"]
-                if not walkable_areas:
-                    print("❌ 沒有找到可行走區域")
-                    return False
-
-                print(f"✅ 安全區域模式準備完成，找到 {len(walkable_areas)} 個可行走區域")
-
-            else:
-                # 路徑點模式：需要路徑點
-                if not hasattr(self.waypoint_system, 'waypoints') or not self.waypoint_system.waypoints:
-                    print("❌ 路徑點模式需要路徑點")
-                    return False
-
-                print(f"✅ 路徑點模式準備完成，路徑點數量: {len(self.waypoint_system.waypoints)}")
-
-            # 檢查控制器
-            if not self.controller or not self.controller.is_connected:
-                print("❌ 控制器未連接，嘗試重新初始化...")
-                self._init_adb()
-                
-                if not self.controller or not self.controller.is_connected:
-                    print("❌ 控制器初始化失敗")
-                    return False
-
-            # ✅ 關鍵修正：確保狀態被正確設置
-            self.auto_hunt_mode = "attack"  # 設置為攻擊模式
-            self.is_enabled = True  # 啟用戰鬥系統
             
-            # 重置所有計時器
-            current_time = time.time()
-            self.last_attack_time = current_time
-            self.last_combat_check = current_time
-            self.last_movement_time = current_time
-
-            # 輸出詳細狀態
-            print("\n✅ 戰鬥系統已啟動")
-            print(f"🔍 戰鬥模式: {combat_mode}")
-            print(f"🔍 自動打怪模式: {self.auto_hunt_mode}")
-            print(f"🔍 控制器連接: {self.controller.is_connected}")
-            print(f"🔍 is_enabled: {self.is_enabled}")
-            print(f"🔍 攻擊冷卻: {self.hunt_settings.get('attack_cooldown', '未設定')}")
-            print(f"🔍 移動速度: {self.hunt_settings.get('movement_speed', '未設定')}")
-
+            # 確定戰鬥模式
+            combat_mode = self.hunt_settings.get('combat_mode', 'safe_area')
+            
+            if combat_mode == 'safe_area':
+                walkable_areas = getattr(self.waypoint_system, 'area_grid', {})
+                walkable_areas = {k: v for k, v in walkable_areas.items() if v == 'walkable'}
+                
+                if not walkable_areas:
+                    self.logger.error("安全區域模式需要區域標記")
+                    return False
+                    
+            elif combat_mode == 'waypoint':
+                if not self.waypoint_system.waypoints:
+                    self.logger.error("路徑點模式需要路徑點")
+                    return False
+                    
+            # 楓之谷 Worlds 原生遊戲 - 無需 ADB 控制器檢查
+            self.logger.info("楓之谷 Worlds 原生遊戲模式 - 跳過控制器檢查")
+            
+            # 啟動戰鬥系統
+            self.is_enabled = True
+            self.auto_hunt_mode = True
+            self.last_attack_time = 0
+            self.current_action = None
+            self.action_start_time = 0
+            self.action_duration = 0
+            
             return True
-
+            
         except Exception as e:
-            print(f"❌ 啟動戰鬥系統失敗: {e}")
-            import traceback
-            traceback.print_exc()
-            # ✅ 確保失敗時重置狀態
-            self.is_enabled = False
-            self.auto_hunt_mode = "off"
+            self.logger.error(f"啟動戰鬥系統失敗: {e}")
             return False
 
     def stop(self):
         """停止戰鬥系統"""
         try:
             self.is_enabled = False
-            self.auto_hunt_mode = "off"
-            print("⏹️ 戰鬥系統已停止")
-            return True
+            self.auto_hunt_mode = False
             
         except Exception as e:
-            print(f"❌ 停止戰鬥系統失敗: {e}")
-            return False
+            self.logger.error(f"停止戰鬥系統失敗: {e}")
 
-    def update(self, rel_pos, frame):
-        """修正版：支援多種戰鬥模式的更新邏輯，並加入動作互斥與狀態清理"""
+    def update(self, rel_pos, frame, frame_history=None):
+        """✅ 整合血條檢測的戰鬥系統更新邏輯 - 支援歷史幀"""
         try:
             # ✅ 定期清理可能卡住的動作狀態
             if self._is_action_in_progress():
                 current_time = time.time()
                 if (current_time - self.action_start_time) > (self.action_duration + 2.0):
-                    print(f"⚠️ 動作 {self.current_action} 超時，強制結束")
                     self._end_action()
 
             # 1. 基本狀態檢查
             if not self.is_enabled:
-                print("❌ 戰鬥系統未啟用")
                 return
-            if not rel_pos:
-                print("❌ 無法獲取角色位置")
+            
+            # ✅ 優先使用血條檢測獲取角色位置
+            character_pos = None
+            if self.use_health_bar_tracking and frame is not None:
+                character_pos = self.get_character_position_from_health_bar(frame)
+            
+            # 如果血條檢測失敗，使用傳統方法
+            if character_pos is None:
+                character_pos = rel_pos
+            
+            if not character_pos:
                 return
 
             # ✅ 關鍵修正：檢查是否有動作正在執行
             if self._is_action_in_progress():
-                print(f"⏳ 動作執行中: {self.current_action} (剩餘 {self.action_duration - (time.time() - self.action_start_time):.1f}秒)")
                 return  # 有動作執行中，跳過本次更新
 
-            # 2. 輸出當前狀態
-            print("\n🔍 戰鬥系統狀態:")
-            print(f"  - is_enabled: {self.is_enabled}")
-            print(f"  - auto_hunt_mode: {self.auto_hunt_mode}")
-            print(f"  - 角色位置: {rel_pos}")
-            print(f"  - 攻擊冷卻: {time.time() - self.last_attack_time:.1f}秒")
+            # ✅ 使用血條檢測計算與怪物的距離 - 支援歷史幀
+            monster_distances = []
+            if frame is not None:
+                monster_distances = self.calculate_distance_to_monsters(frame, character_pos, frame_history)
 
             # 3. 根據戰鬥模式選擇不同的處理邏輯
             combat_mode = self.hunt_settings.get('combat_mode', 'waypoint')
-            print(f"  - 戰鬥模式: {combat_mode}")
             
             if combat_mode == 'safe_area':
                 # 安全區域模式
-                if self._is_near_forbidden(rel_pos):
-                    print("🚫 在禁止區域，緊急回歸")
-                    return self._execute_safe_return_movement(rel_pos)
+                if self._is_near_forbidden(character_pos):
+                    return self._execute_safe_return_movement(character_pos)
 
-                if not self._is_in_safe_area(rel_pos):
-                    print("⚠️ 不在安全區域，執行回歸移動")
-                    return self._execute_safe_return_movement(rel_pos)
+                if not self._is_in_safe_area(character_pos):
+                    return self._execute_safe_return_movement(character_pos)
 
-                # 在安全區域內檢測怪物
-                has_target = False
-                if frame is not None:
-                    has_target = self._update_monster_targeting_in_safe_area(frame, rel_pos)
-                    print(f"  - 是否有目標: {has_target}")
+                # ✅ 使用距離資訊更新目標
+                has_target = self._update_monster_targeting_with_distance(monster_distances, character_pos)
 
                 # 安全區域內的戰鬥邏輯
                 if has_target and self.auto_hunt_mode != "off":
                     current_time = time.time()
                     attack_interval = self.hunt_settings.get('attack_cooldown', 1.5)
+                    
+                    # ✅ 檢查是否需要接近怪物
+                    if self.auto_hunt_target and self.auto_hunt_target.get('needs_approach', False):
+                        if self._approach_monster(character_pos):
+                            return  # 接近移動後結束本次更新
+                    
+                    # 在攻擊範圍內，可以攻擊
                     if current_time - self.last_attack_time >= attack_interval:
-                        print("🎯 執行攻擊動作")
                         if self._execute_combat_sequence_with_state():
                             self.last_attack_time = current_time
                         return  # 攻擊後結束本次更新
 
                 # 沒有目標或攻擊冷卻中，執行移動
                 if self.auto_hunt_mode != "off":
-                    print("🚶 執行巡邏移動")
-                    self._execute_patrol_movement(rel_pos)
+                    self._execute_patrol_movement(character_pos)
 
             else:
                 # 路徑點模式
-                has_target = False
-                if frame is not None:
-                    has_target = self._update_monster_targeting(frame, rel_pos)
-                    print(f"  - 是否有目標: {has_target}")
+                has_target = self._update_monster_targeting_with_distance(monster_distances, character_pos)
+                
                 if self.auto_hunt_mode != "off":
                     current_time = time.time()
                     hunt_attack_interval = self.hunt_settings.get('attack_cooldown', 0.5)
                     if current_time - self.last_attack_time >= hunt_attack_interval:
                         if has_target:
-                            print("🎯 執行攻擊動作")
                             if self._execute_combat_sequence_with_state():
                                 self.last_attack_time = current_time
                             return
                     # 沒有目標或攻擊冷卻中，執行移動
-                    print("🚶 執行路徑移動")
-                    self._execute_patrol_movement(rel_pos)
+                    self._execute_patrol_movement(character_pos)
 
         except Exception as e:
-            print(f"⚠️ 戰鬥系統更新失敗: {e}")
-            import traceback
-            traceback.print_exc()
+            self.logger.error(f"戰鬥系統更新失敗: {e}")
 
     def _handle_waypoint_movement(self, current_pos):
         """修正版：根據戰鬥模式選擇移動邏輯"""
@@ -315,12 +438,10 @@ class SimpleCombat:
             if combat_mode == 'safe_area':
                 # ✅ 1. 強制檢查是否在禁止區域
                 if self._is_near_forbidden(current_pos):
-                    print(f"🚫 角色在禁止區域，執行緊急回歸")
                     return self._emergency_return_to_safe_area(current_pos)
                 
                 # ✅ 2. 檢查是否在安全區域內
                 if not self._is_in_safe_area(current_pos):
-                    print(f"⚠️ 角色不在安全區域，回歸安全區域")
                     return self._return_to_safe_area(current_pos)
                 
                 # ✅ 3. 如果有怪物目標，在安全區域內追擊
@@ -332,19 +453,14 @@ class SimpleCombat:
                 
             else:
                 # 路徑點模式
-                print("執行路徑移動")
                 # 檢查 current_pos 是否接近 forbidden
                 forbidden_pos = self._is_near_forbidden(current_pos, return_pos=True)
-                if forbidden_pos:
-                    if self._is_same_position(current_pos, forbidden_pos):
-                        print(f"🚫 已到禁止區域: {current_pos} (forbidden: {forbidden_pos})")
-                    else:
-                        print(f"⚠️ 角色接近 forbidden 區域: {current_pos} (forbidden: {forbidden_pos})")
+                if forbidden_pos and self._is_same_position(current_pos, forbidden_pos):
+                    return False
                 
                 # 獲取下一個路徑點
                 next_waypoint = self.waypoint_system.get_next_waypoint(current_pos)
                 if not next_waypoint:
-                    print("❌ 沒有可用的路徑點")
                     self.last_planned_path = None
                     return
                 
@@ -352,47 +468,35 @@ class SimpleCombat:
                 path = self.grid_utils.find_path(current_pos, next_waypoint['pos'])
                 self.last_planned_path = path
                 if not path:
-                    print("❌ 無法找到可行路徑")
                     return
                 
                 # 獲取下一個路徑點
                 next_pos = path[1] if len(path) > 1 else next_waypoint['pos']
-                forbidden_next = self._is_near_forbidden(next_pos, return_pos=True)
-                if forbidden_next:
-                    if self._is_same_position(next_pos, forbidden_next):
-                        print(f"🚫 下一步已到禁止區域: {next_pos} (forbidden: {forbidden_next})")
-                    else:
-                        print(f"⚠️ 下一步接近 forbidden 區域: {next_pos} (forbidden: {forbidden_next})")
                 
                 direction = self._get_direction_to_target(current_pos, next_pos)
                 if direction:
-                    print(f"🧭 移動方向: {direction}")
                     return self._move_in_direction(direction)
             
         except Exception as e:
-            print(f"❌ 移動處理失敗: {e}")
+            self.logger.error(f"移動處理失敗: {e}")
             return False
 
     def _return_to_safe_area(self, current_pos):
         """回歸安全區域"""
         try:
-            print(f"🔄 開始回歸安全區域")
-            
             # 尋找最近的安全位置
             nearest_safe = self._find_nearest_safe_position(current_pos)
             
             if nearest_safe:
                 direction = self._get_direction_to_target(current_pos, nearest_safe)
                 if direction:
-                    print(f"🚶 回歸方向: {direction}")
                     return self._move_in_direction(direction, duration=0.5)
             
             # 如果找不到安全位置，使用預設方向
-            print(f"⚠️ 找不到安全位置，使用預設方向")
             return self._move_in_direction("left", duration=0.3)
             
         except Exception as e:
-            print(f"❌ 回歸安全區域失敗: {e}")
+            self.logger.error(f"回歸安全區域失敗: {e}")
             return False
 
     def _find_nearest_safe_position(self, current_pos):
@@ -424,7 +528,7 @@ class SimpleCombat:
                       key=lambda p: self._calculate_distance(current_pos, p))
             
         except Exception as e:
-            print(f"❌ 尋找最近安全位置失敗: {e}")
+            self.logger.error(f"尋找最近安全位置失敗: {e}")
             return None
 
     def _is_near_forbidden(self, pos, threshold=0.02, return_pos=False):
@@ -449,30 +553,23 @@ class SimpleCombat:
         return abs(pos1[0] - pos2[0]) < tol and abs(pos1[1] - pos2[1]) < tol
 
     def _execute_combat_sequence_with_state(self):
-        """帶狀態管理的戰鬥序列"""
+        """帶狀態管理的戰鬥序列 - 楓之谷 Worlds 模擬版本"""
         try:
-            if not self.controller or not self.controller.is_connected:
-                return False
             if not self.auto_hunt_target:
                 return False
             # ✅ 開始攻擊動作（預估1.2秒包含執行時間）
             self._start_action("attack", 1.2)
-            print("⚔️ 開始執行戰鬥序列")
-            success = self.controller.attack()
-            if success:
-                print("⚔️ 攻擊執行成功")
-                return True
-            else:
-                print("❌ 攻擊執行失敗")
-                self._end_action()  # 失敗時結束動作狀態
-                return False
+            # 楓之谷 Worlds 原生遊戲 - 模擬攻擊動作
+            self.logger.info("🗡️ 模擬攻擊動作（楓之谷 Worlds 原生遊戲）")
+            # 這裡可以添加鍵盤模擬（如 pyautogui.press('ctrl')）
+            return True
         except Exception as e:
-            print(f"❌ 戰鬥序列錯誤: {e}")
+            self.logger.error(f"戰鬥序列錯誤: {e}")
             self._end_action()  # 異常時結束動作狀態
             return False
 
     def _execute_patrol_movement(self, current_pos):
-        """執行巡邏移動 - 帶狀態管理"""
+        """執行巡邏移動 - 楓之谷 Worlds 模擬版本"""
         try:
             target_pos = self._find_next_patrol_target(current_pos)
             if not target_pos:
@@ -483,19 +580,17 @@ class SimpleCombat:
             distance = self._calculate_distance(current_pos, target_pos)
             move_duration = min(0.5, max(0.2, distance * 2))  # 0.2-0.5秒範圍
             self._start_action("move", move_duration + 0.1)  # 加0.1秒緩衝
-            print(f"🚶 執行移動: {direction} (持續 {move_duration:.1f}秒)")
-            success = self.controller.move(direction, move_duration)
-            if not success:
-                self._end_action()  # 失敗時結束動作狀態
-                return False
+            # 楓之谷 Worlds 原生遊戲 - 模擬移動動作
+            self.logger.info(f"🚶 模擬移動動作: {direction} ({move_duration:.2f}秒) - 楓之谷 Worlds")
+            # 這裡可以添加鍵盤模擬（如 pyautogui.press('left')）
             return True
         except Exception as e:
-            print(f"❌ 移動執行失敗: {e}")
+            self.logger.error(f"移動執行失敗: {e}")
             self._end_action()
             return False
 
     def _execute_safe_return_movement(self, current_pos):
-        """安全回歸移動 - 帶狀態管理"""
+        """安全回歸移動 - 楓之谷 Worlds 模擬版本"""
         try:
             safe_pos = self._find_nearest_safe_position(current_pos)
             if not safe_pos:
@@ -505,14 +600,12 @@ class SimpleCombat:
                 return False
             move_duration = 0.3
             self._start_action("emergency_move", move_duration + 0.1)
-            print(f"🚨 緊急回歸: {direction}")
-            success = self.controller.move(direction, move_duration)
-            if not success:
-                self._end_action()
-                return False
+            # 楓之谷 Worlds 原生遊戲 - 模擬緊急回歸移動
+            self.logger.info(f"🚨 模擬緊急回歸移動: {direction} ({move_duration:.2f}秒) - 楓之谷 Worlds")
+            # 這裡可以添加鍵盤模擬（如 pyautogui.press('left')）
             return True
         except Exception as e:
-            print(f"❌ 緊急回歸失敗: {e}")
+            self.logger.error(f"緊急回歸失敗: {e}")
             self._end_action()
             return False
 
@@ -529,12 +622,12 @@ class SimpleCombat:
         self.current_action = action_type
         self.action_start_time = time.time()
         self.action_duration = duration
-        print(f"🎯 開始動作: {action_type} (持續 {duration:.1f}秒)")
+        pass
 
     def _end_action(self):
         """結束動作"""
         if self.current_action:
-            print(f"✅ 完成動作: {self.current_action}")
+            pass
         self.current_action = None
         self.action_start_time = 0
         self.action_duration = 0
@@ -550,6 +643,54 @@ class SimpleCombat:
         
         # 否則只進行水平移動
         return 'right' if dx > 0 else 'left'
+
+    def _update_monster_targeting_with_distance(self, monster_distances, current_pos):
+        """使用距離資訊更新怪物目標"""
+        try:
+            if not monster_distances:
+                self.auto_hunt_target = None
+                return False
+            
+            # 設定檢測範圍
+            attack_range = self.hunt_settings.get('attack_range', 0.4)
+            approach_range = self.hunt_settings.get('approach_distance', 0.1) + attack_range
+            detection_range = self.hunt_settings.get('max_chase_distance', 0.15)
+            
+            # 獲取最近的怪物
+            closest_monster = monster_distances[0]
+            closest_distance = closest_monster['distance']
+            
+            if closest_distance <= attack_range:
+                # 在攻擊範圍內
+                monster_info = closest_monster.copy()
+                monster_info['needs_approach'] = False
+                monster_info['in_range'] = True
+                self.auto_hunt_target = monster_info
+                return True
+                
+            elif closest_distance <= approach_range:
+                # 需要接近攻擊
+                monster_info = closest_monster.copy()
+                monster_info['needs_approach'] = True
+                monster_info['in_range'] = False
+                self.auto_hunt_target = monster_info
+                return True
+                
+            elif closest_distance <= detection_range:
+                # 在檢測範圍內，需要大幅接近
+                monster_info = closest_monster.copy()
+                monster_info['needs_approach'] = True
+                monster_info['in_range'] = False
+                self.auto_hunt_target = monster_info
+                return True
+            
+            # 超出檢測範圍
+            self.auto_hunt_target = None
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"更新怪物目標失敗: {e}")
+            return False
 
     def _update_monster_targeting(self, frame, current_pos):
         """修正版：支援安全區域模式的怪物檢測"""
@@ -585,11 +726,11 @@ class SimpleCombat:
                                 ))
             
             self.auto_hunt_target = nearest_monster
-            print(f"🎯 已選擇目標: {nearest_monster.get('name', '未知')}")
+            pass
             return True
             
         except Exception as e:
-            print(f"❌ 怪物檢測失敗: {e}")
+            pass
             return False
 
     def _update_monster_targeting_in_safe_area(self, frame, current_pos):
@@ -623,21 +764,21 @@ class SimpleCombat:
                                 ))
             
             self.auto_hunt_target = nearest_monster
-            print(f"🎯 已選擇目標: {nearest_monster.get('name', '未知')} 距離:{self._calculate_distance(current_pos, self._screen_to_relative(nearest_monster['position'], frame.shape)):.3f}")
+            pass
             return True
 
         except Exception as e:
-            print(f"❌ 安全區域怪物檢測失敗: {e}")
+            pass
             return False
 
     def _find_next_target(self, current_pos):
         """✅ 修正版：完整的巡邏目標尋找"""
         try:
-            print(f"🔍 尋找移動目標 - 當前位置: {current_pos}")
+            pass
             
             # 檢查是否有area_grid
             if not hasattr(self.waypoint_system, 'area_grid') or not self.waypoint_system.area_grid:
-                print("❌ 沒有area_grid數據，使用簡單巡邏")
+                pass
                 return self._simple_patrol_target(current_pos)
             
             # ✅ 使用MovementUtils但添加巡邏邏輯
@@ -646,24 +787,24 @@ class SimpleCombat:
             )
             
             if area_target:
-                print(f"✅ 找到安全目標: {area_target}")
+                pass
                 return area_target
             else:
-                print("⚠️ MovementUtils沒找到目標，使用後備巡邏")
+                pass
                 return self._simple_patrol_target(current_pos)
                 
         except Exception as e:
-            print(f"❌ 目標尋找失敗: {e}")
+            pass
             return self._simple_patrol_target(current_pos)
 
     def _get_movement_with_area_awareness(self, current_pos, target_pos):
         """✅ 修正版：區域感知移動"""
         try:
-            print(f"🧭 計算移動方向: {current_pos} -> {target_pos}")
+            pass
             
             # 檢查是否有區域數據
             if not hasattr(self.waypoint_system, 'area_grid') or not self.waypoint_system.area_grid:
-                print("⚠️ 沒有區域數據，使用簡單方向計算")
+                pass
                 return self._simple_direction_calculation(current_pos, target_pos)
             
             # ✅ 使用MovementUtils
@@ -672,14 +813,14 @@ class SimpleCombat:
             )
             
             if direction:
-                print(f"✅ 區域感知方向: {direction}")
+                pass
                 return direction
             else:
-                print("⚠️ 區域感知失敗，使用簡單計算")
+                pass
                 return self._simple_direction_calculation(current_pos, target_pos)
                 
         except Exception as e:
-            print(f"❌ 移動方向計算失敗: {e}")
+            pass
             return self._simple_direction_calculation(current_pos, target_pos)
 
     def _get_area_type(self, position):
@@ -736,7 +877,7 @@ class SimpleCombat:
 
     def _face_monster(self, monster_info):
         """面向怪物"""
-        print(f"👀 面向怪物: {monster_info['name']}")
+        pass
 
     # ✅ 保留的功能方法
     def set_skill_rotation(self, skills: list):
@@ -744,19 +885,19 @@ class SimpleCombat:
         if skills:
             self.skill_rotation = skills
             self.current_skill_index = 0
-            print(f"✅ 技能輪替已設定: {skills}")
+            pass
 
     def toggle_auto_pickup(self):
         """切換自動撿取"""
         self.auto_pickup = not self.auto_pickup
         status = "開啟" if self.auto_pickup else "關閉"
-        print(f"📦 自動撿取: {status}")
+        pass
         return self.auto_pickup
 
     def _test_horizontal_line_tracking(self):
         """✅ 基於搜索結果[6]的水平線追蹤測試"""
         try:
-            print("📏 開始水平線追蹤測試...")
+            pass
             
             # 記錄起始位置
             frame = self.ro_helper.capturer.grab_frame()
@@ -764,8 +905,8 @@ class SimpleCombat:
             if not start_pos:
                 start_pos = (0.5, 0.5)
             
-            print(f"📍 起始位置: {start_pos}")
-            print(f"📏 基準水平線 Y座標: {start_pos[1]:.3f}")
+            pass
+            pass
             
             # 設定水平線追蹤
             self.horizontal_tracking = True
@@ -783,8 +924,8 @@ class SimpleCombat:
             combat_system.current_target = target
             combat_system.start()
             
-            print(f"🎯 設定水平目標: {target}")
-            print("📏 開始追蹤是否保持在水平線上...")
+            pass
+            pass
             
             # 啟動追蹤
             self._track_horizontal_movement()
@@ -792,7 +933,7 @@ class SimpleCombat:
             self.movement_status.config(text="狀態: 水平線追蹤中")
             
         except Exception as e:
-            print(f"❌ 水平線追蹤測試失敗: {e}")
+            pass
 
     def _track_horizontal_movement(self):
         """追蹤水平移動"""
@@ -818,18 +959,18 @@ class SimpleCombat:
                 
                 # ✅ 基於搜索結果[6]的即時反饋
                 if vertical_deviation < 0.01:
-                    print(f"✅ {timestamp:.1f}s: 完美保持水平線 - 位置{current_pos} 偏差{vertical_deviation:.4f}")
+                    pass
                 elif vertical_deviation < 0.02:
-                    print(f"👍 {timestamp:.1f}s: 良好保持水平線 - 位置{current_pos} 偏差{vertical_deviation:.4f}")
+                    pass
                 else:
-                    print(f"⚠️ {timestamp:.1f}s: 偏離水平線 - 位置{current_pos} 偏差{vertical_deviation:.4f}")
+                    pass
                 
                 # 檢查區域類型
                 area_type = self.ro_helper.auto_combat._get_area_type(current_pos)
                 if area_type == "walkable":
-                    print(f"🟢 在可行走區域")
+                    pass
                 else:
-                    print(f"❌ 不在可行走區域 (類型: {area_type})")
+                    pass
             
             # 測試15秒
             if time.time() - self.horizontal_test_start < 15:
@@ -838,7 +979,7 @@ class SimpleCombat:
                 self._analyze_horizontal_movement()
                 
         except Exception as e:
-            print(f"❌ 水平追蹤錯誤: {e}")
+            pass
 
     def _analyze_horizontal_movement(self):
         """分析水平移動結果"""
@@ -847,85 +988,57 @@ class SimpleCombat:
         if not hasattr(self, 'horizontal_history') or not self.horizontal_history:
             return
         
-        print("\n📊 水平線移動分析報告:")
+        pass
         
         # 分析垂直偏差
         deviations = [record['deviation'] for record in self.horizontal_history]
         max_deviation = max(deviations)
         avg_deviation = sum(deviations) / len(deviations)
         
-        print(f"📏 基準水平線: Y = {self.horizontal_baseline:.3f}")
-        print(f"📏 最大偏差: {max_deviation:.4f}")
-        print(f"📏 平均偏差: {avg_deviation:.4f}")
+        pass
+        pass
+        pass
         
         # 分析水平移動範圍
         x_positions = [record['pos'][0] for record in self.horizontal_history]
         x_range = max(x_positions) - min(x_positions)
         
-        print(f"📏 水平移動範圍: {x_range:.3f}")
+        pass
         
         # 評估結果
         if avg_deviation < 0.01 and x_range > 0.1:
-            print("🏆 優秀！角色完美沿水平線移動")
+            pass
         elif avg_deviation < 0.02 and x_range > 0.05:
-            print("👍 良好！角色基本沿水平線移動")
+            pass
         elif x_range > 0.02:
-            print("⚠️ 可接受！角色有移動但偏離水平線較多")
+            pass
         else:
-            print("❌ 需要改進！角色移動不明顯或嚴重偏離")
+            pass
         
         self.movement_status.config(text="狀態: 水平線分析完成")
 
     def diagnose_waypoint_system(self):
-        """✅ 基於搜索結果[1][2]的waypoint系統診斷"""
+        """診斷waypoint系統狀態 - 簡化版"""
         try:
-            print("🔍 診斷waypoint系統...")
-            
-            # 檢查waypoint_system
             if not self.waypoint_system:
-                print("❌ waypoint_system為None")
+                self.logger.warning("waypoint_system為None")
                 return
             
-            print(f"✅ waypoint_system存在，類型: {type(self.waypoint_system)}")
-            
-            # 檢查各種屬性
-            attrs_to_check = ['waypoints', 'obstacles', 'area_grid', 'obstacle_types']
-            
-            for attr_name in attrs_to_check:
+            # 檢查基本屬性
+            attributes = ['waypoints', 'area_grid', 'current_target_index']
+            for attr_name in attributes:
                 if hasattr(self.waypoint_system, attr_name):
                     attr_value = getattr(self.waypoint_system, attr_name)
-                    attr_type = type(attr_value).__name__
-                    
                     if isinstance(attr_value, (list, dict)):
                         count = len(attr_value)
-                        print(f"✅ {attr_name}: {attr_type}, 數量: {count}")
-                        
-                        # 顯示內容樣本
-                        if attr_name == 'area_grid' and attr_value:
-                            sample_items = list(attr_value.items())[:3]
-                            print(f"  樣本: {sample_items}")
+                        self.logger.info(f"{attr_name}: {count} 項目")
                     else:
-                        print(f"✅ {attr_name}: {attr_type}")
+                        self.logger.info(f"{attr_name}: {type(attr_value)}")
                 else:
-                    print(f"❌ {attr_name}: 不存在")
-            
-            # 檢查area_grid的鍵值格式
-            if hasattr(self.waypoint_system, 'area_grid') and self.waypoint_system.area_grid:
-                area_grid = self.waypoint_system.area_grid
-                print("🔍 分析area_grid鍵值格式:")
-                
-                key_types = {}
-                for key in list(area_grid.keys())[:5]:  # 檢查前5個鍵值
-                    key_type = type(key).__name__
-                    key_types[key_type] = key_types.get(key_type, 0) + 1
-                    print(f"  鍵值 {key} (類型: {key_type}) -> {area_grid[key]}")
-                
-                print(f"🔍 鍵值類型統計: {key_types}")
-            
+                    self.logger.warning(f"{attr_name}: 不存在")
+                    
         except Exception as e:
-            print(f"❌ 診斷失敗: {e}")
-            import traceback
-            traceback.print_exc()
+            self.logger.error(f"診斷waypoint系統失敗: {e}")
 
     def _check_fall_detection(self, pre_move_pos):
         """✅ 掉落檢測"""
@@ -942,18 +1055,18 @@ class SimpleCombat:
                         # 檢查垂直位置變化
                         vertical_change = abs(current_pos[1] - pre_move_pos[1])
                         
-                        print(f"📏 移動前後位置: {pre_move_pos} → {current_pos}")
-                        print(f"📏 垂直變化: {vertical_change:.3f}")
+                        pass
+                        pass
                         
                         # 如果垂直位置變化超過0.1（10%），視為掉落
                         if vertical_change > 0.1:
-                            print(f"🚨 檢測到掉落！垂直變化: {vertical_change:.3f}")
+                            pass
                             return True
             
             return False
             
         except Exception as e:
-            print(f"❌ 掉落檢測失敗: {e}")
+            pass
             return False
         
     def _has_nearby_walkable_area(self, position, radius=0.1):
@@ -989,7 +1102,7 @@ class SimpleCombat:
             return False
             
         except Exception as e:
-            print(f"❌ 周圍區域檢測失敗: {e}")
+            pass
             return False
 
     def _get_movement_with_smart_fallback(self, current_pos, target_pos):
@@ -1001,11 +1114,11 @@ class SimpleCombat:
             return direction
         
         # 如果無法移動，檢查是否因為過度保守
-        print("🔍 嘗試智能後備策略...")
+        pass
         
         # 檢查周圍是否有可行走區域
         if self._has_nearby_walkable_area(current_pos, radius=0.15):
-            print("🟢 周圍有可行走區域，使用簡單朝向目標移動")
+            pass
             
             # 使用簡單的朝向目標移動
             dx = target_pos[0] - current_pos[0]
@@ -1016,83 +1129,30 @@ class SimpleCombat:
             if distance > 0:
                 return (dx / distance, dy / distance)
         
-        print("❌ 無法找到安全移動方向")
+        pass
         return None
         
     def _find_next_patrol_target(self, current_pos):
-        """✅ 修正版巡邏目標尋找 - 絕對強制在可行走範圍內"""
-        print(f"🔍 尋找巡邏目標 - 當前位置: {current_pos}")
-        
-        if hasattr(self.waypoint_system, 'area_grid') and self.waypoint_system.area_grid:
-            current_y = current_pos[1]
+        """尋找下一個巡邏目標"""
+        try:
+            if not hasattr(self.waypoint_system, 'area_grid') or not self.waypoint_system.area_grid:
+                # 沒有區域數據，使用簡單巡邏
+                return self._simple_patrol_target(current_pos)
             
-            # 收集當前水平線的可行走位置
-            walkable_x_positions = []
+            # 使用MovementUtils尋找安全移動目標
+            from includes.movement_utils import MovementUtils
+            movement_utils = MovementUtils(self.waypoint_system)
+            area_target = movement_utils.find_safe_movement_target(current_pos)
             
-            for pos_key, area_type in self.waypoint_system.area_grid.items():
-                if area_type == "walkable":
-                    try:
-                        if isinstance(pos_key, tuple):
-                            target_x, target_y = pos_key
-                        elif isinstance(pos_key, str) and ',' in pos_key:
-                            x_str, y_str = pos_key.split(',')
-                            target_x, target_y = float(x_str), float(y_str)
-                        else:
-                            continue
-                        
-                        # 同一水平線上的可行走點
-                        if abs(target_y - current_y) < 0.05:
-                            walkable_x_positions.append(target_x)
-                            
-                    except Exception:
-                        continue
-            
-            if walkable_x_positions:
-                # ✅ 絕對強制邊界限制
-                min_safe_x = min(walkable_x_positions)
-                max_safe_x = max(walkable_x_positions)
-                current_x = current_pos[0]
+            if area_target:
+                return area_target
+            else:
+                # MovementUtils沒找到目標，使用後備巡邏
+                return self._simple_patrol_target(current_pos)
                 
-                print(f"🛡️ 強制可行走範圍: [{min_safe_x:.3f}, {max_safe_x:.3f}]")
-                print(f"📍 當前位置X: {current_x:.3f}")
-                
-                # ✅ 絕對不允許目標超出可行走範圍 - 基於搜索結果【2】
-                if current_x <= min_safe_x:
-                    # 在左邊緣或超出，目標設定在安全範圍最左邊
-                    target_x = min_safe_x + 0.01
-                    target_pos = (target_x, current_pos[1])
-                    print(f"🏃 強制修正：從左邊移動到安全範圍: {target_pos}")
-                elif current_x >= max_safe_x:
-                    # 在右邊緣或超出，目標設定在安全範圍最右邊
-                    target_x = max_safe_x - 0.01
-                    target_pos = (target_x, current_pos[1])
-                    print(f"🏃 強制修正：從右邊移動到安全範圍: {target_pos}")
-                else:
-                    # ✅ 在可行走範圍內，目標必須也在範圍內
-                    center_x = (min_safe_x + max_safe_x) / 2
-                    
-                    # 計算安全的目標位置
-                    if current_x < center_x:
-                        # 往右邊移動，但不超出範圍
-                        target_x = min(current_x + 0.02, max_safe_x - 0.01)
-                    else:
-                        # 往左邊移動，但不超出範圍
-                        target_x = max(current_x - 0.02, min_safe_x + 0.01)
-                    
-                    target_pos = (target_x, current_pos[1])
-                    print(f"🏃 安全範圍內巡邏: {target_pos}")
-                
-                # ✅ 最終驗證：確保目標絕對在可行走範圍內
-                final_x = max(min_safe_x + 0.005, min(target_pos[0], max_safe_x - 0.005))
-                final_target = (final_x, current_pos[1])
-                
-                print(f"✅ 最終安全目標: {final_target}")
-                print(f"🔒 目標驗證: {min_safe_x:.3f} <= {final_x:.3f} <= {max_safe_x:.3f}")
-                
-                return final_target
-        
-        print("❌ 沒有找到可行走區域")
-        return None
+        except Exception as e:
+            self.logger.error(f"目標尋找失敗: {e}")
+            return self._simple_patrol_target(current_pos)
 
     def _safe_area_chase_target(self, current_pos):
         """在安全區域內追擊目標（帶狀態管理）"""
@@ -1114,7 +1174,7 @@ class SimpleCombat:
             distance = self._calculate_distance(current_pos, rel_target_pos)
             max_chase = self.hunt_settings.get('max_chase_distance', 0.15)
             if distance > max_chase:
-                print(f"🎯 目標超出安全追擊範圍，放棄追擊")
+                pass
                 self.auto_hunt_target = None
                 return self._execute_patrol_movement(current_pos)
             # ✅ 計算安全的移動位置
@@ -1122,14 +1182,14 @@ class SimpleCombat:
             if safe_move_pos and self._is_in_safe_area(safe_move_pos):
                 direction = self._get_direction_to_target(current_pos, safe_move_pos)
                 if direction:
-                    print(f"🎯 安全追擊移動: {direction}")
+                    pass
                     # 改為呼叫狀態管理移動
                     return self._execute_patrol_movement(current_pos)
             # 無法安全接近，原地攻擊
-            print(f"🎯 目標在範圍內，原地攻擊")
+            pass
             return True
         except Exception as e:
-            print(f"❌ 安全追擊失敗: {e}")
+            pass
             return False
 
     def _safe_area_patrol(self, current_pos):
@@ -1137,7 +1197,7 @@ class SimpleCombat:
         try:
             return self._execute_patrol_movement(current_pos)
         except Exception as e:
-            print(f"❌ 安全巡邏失敗: {e}")
+            pass
             return False
 
     def _screen_to_relative(self, screen_pos, frame_shape):
@@ -1157,7 +1217,7 @@ class SimpleCombat:
                 return False
 
             current_x, current_y = position
-            print(f"🔍 檢查位置: ({current_x:.6f}, {current_y:.6f})")  # 提高精度顯示
+            pass
             
             # ✅ 動態容忍度：基於座標精度調整
             base_tolerance_x = 0.015  # 基礎X軸容忍度
@@ -1171,7 +1231,7 @@ class SimpleCombat:
             tolerance_x = base_tolerance_x * edge_factor
             tolerance_y = base_tolerance_y * edge_factor
             
-            print(f"📏 使用容忍度: X={tolerance_x:.4f}, Y={tolerance_y:.4f}")
+            pass
             
             # 檢查所有可行走區域
             for pos_key, area_type in self.waypoint_system.area_grid.items():
@@ -1189,24 +1249,24 @@ class SimpleCombat:
                         x_diff = abs(current_x - target_x)
                         y_diff = abs(current_y - target_y)
                         
-                        print(f"📍 與 ({target_x:.6f}, {target_y:.6f}) 的距離:")
-                        print(f"   X差={x_diff:.6f} ({'✅' if x_diff <= tolerance_x else '❌'})")
-                        print(f"   Y差={y_diff:.6f} ({'✅' if y_diff <= tolerance_y else '❌'})")
+                        pass
+                        pass
+                        pass
                         
                         # ✅ 分別檢查X和Y軸
                         if x_diff <= tolerance_x and y_diff <= tolerance_y:
-                            print(f"✅ 位置匹配: 在安全區域內")
+                            pass
                             return True
                             
                     except Exception as e:
-                        print(f"❌ 解析區域座標失敗: {pos_key} - {e}")
+                        pass
                         continue
             
-            print(f"❌ 位置不匹配: 不在任何可行走區域內")
+            pass
             return False
             
         except Exception as e:
-            print(f"❌ 安全區域檢查失敗: {e}")
+            pass
             return False
 
     def _calculate_safe_approach_position(self, current_pos, target_pos):
@@ -1250,44 +1310,219 @@ class SimpleCombat:
             return self._find_nearest_safe_position((target_x, target_y))
             
         except Exception as e:
-            print(f"❌ 計算安全接近位置失敗: {e}")
+            pass
             return None
+
+    def _approach_monster(self, current_pos):
+        """✅ 新增：接近怪物的方法"""
+        try:
+            if not self.auto_hunt_target:
+                return False
+            
+            # 獲取怪物位置
+            monster_pos = self.auto_hunt_target.get('position', (0, 0))
+            monster_distance = self.auto_hunt_target.get('distance', 1.0)
+            
+            # 計算朝向怪物的方向
+            dx = monster_pos[0] - current_pos[0]
+            dy = monster_pos[1] - current_pos[1]
+            
+            # 正規化方向向量
+            distance = (dx**2 + dy**2)**0.5
+            if distance < 0.01:
+                pass
+                # 移除接近標記，可以開始攻擊
+                if 'needs_approach' in self.auto_hunt_target:
+                    del self.auto_hunt_target['needs_approach']
+                return False
+            
+            dx /= distance
+            dy /= distance
+            
+            # ✅ 計算安全的接近距離
+            approach_distance = min(0.1, monster_distance * 0.3)  # 接近30%的距離
+            target_x = current_pos[0] + dx * approach_distance
+            target_y = current_pos[1] + dy * approach_distance
+            target_pos = (target_x, target_y)
+            
+            # ✅ 檢查目標位置是否安全
+            if not self._is_in_safe_area(target_pos):
+                pass
+                # 找到朝向怪物方向的安全位置
+                target_pos = self._find_safe_position_towards_target(current_pos, monster_pos)
+                if not target_pos:
+                    pass
+                    return False
+            
+            # 計算移動方向
+            direction = self._get_direction_to_target(current_pos, target_pos)
+            if direction:
+                pass
+                pass
+                pass
+                pass
+                
+                # 執行移動
+                self._start_action("approach", 0.3)
+                # 楓之谷 Worlds 原生遊戲 - 模擬接近移動
+                move_key = direction.upper()
+                self.logger.info(f"🎯 模擬接近怪物移動: {move_key} (0.3秒) - 楓之谷 Worlds")
+                success = True  # 模擬成功
+                if success:
+                    # 檢查是否已經足夠接近，可以開始攻擊
+                    new_distance = self._calculate_distance(current_pos, monster_pos)
+                    attack_range = self.hunt_settings.get('attack_range', 0.4)
+                    if new_distance <= attack_range * 1.2:  # 允許20%的誤差
+                        pass
+                        if 'needs_approach' in self.auto_hunt_target:
+                            del self.auto_hunt_target['needs_approach']
+                    return True
+                return False
+            
+            return False
+            
+        except Exception as e:
+            pass
+            return False
+
+    def _find_safe_position_towards_target(self, current_pos, target_pos):
+        """✅ 新增：找到朝向目標的安全位置"""
+        try:
+            if not hasattr(self.waypoint_system, 'area_grid'):
+                return None
+                
+            # 計算方向向量
+            dx = target_pos[0] - current_pos[0]
+            dy = target_pos[1] - current_pos[1]
+            distance = (dx**2 + dy**2)**0.5
+            
+            if distance < 0.01:
+                return None
+                
+            dx /= distance
+            dy /= distance
+            
+            # 在安全區域內尋找朝向目標的位置
+            area_grid = self.waypoint_system.area_grid
+            best_pos = None
+            best_score = -1
+            
+            for pos_key, area_type in area_grid.items():
+                if area_type == "walkable":
+                    try:
+                        if isinstance(pos_key, str) and ',' in pos_key:
+                            x_str, y_str = pos_key.split(',')
+                            gx, gy = float(x_str), float(y_str)
+                        elif isinstance(pos_key, tuple):
+                            gx, gy = pos_key
+                        else:
+                            continue
+                        
+                        # 計算該位置與當前位置的方向
+                        pos_dx = gx - current_pos[0]
+                        pos_dy = gy - current_pos[1]
+                        pos_distance = (pos_dx**2 + pos_dy**2)**0.5
+                        
+                        if pos_distance < 0.01:
+                            continue
+                            
+                        pos_dx /= pos_distance
+                        pos_dy /= pos_distance
+                        
+                        # 計算與目標方向的相似度
+                        similarity = dx * pos_dx + dy * pos_dy
+                        
+                        # 偏好較近的位置，但要朝向目標方向
+                        score = similarity * 0.7 - pos_distance * 0.3
+                        
+                        if score > best_score and pos_distance < 0.1:  # 限制距離
+                            best_score = score
+                            best_pos = (gx, gy)
+                            
+                    except Exception:
+                        continue
+            
+            return best_pos
+            
+        except Exception as e:
+            pass
+            return None
+
+    def _direction_to_key(self, direction):
+        """方向轉換為按鍵名稱"""
+        direction_map = {
+            'up': 'UP',
+            'down': 'DOWN', 
+            'left': 'LEFT',
+            'right': 'RIGHT'
+        }
+        return direction_map.get(direction, direction)
+
+    def _simple_patrol_target(self, current_pos):
+        """簡單巡邏目標 - 當沒有區域數據時使用"""
+        # 簡單的左右移動
+        if not hasattr(self, '_patrol_direction'):
+            self._patrol_direction = 1  # 1 = 右, -1 = 左
+            
+        # 計算目標位置
+        move_distance = 0.05  # 5%的移動距離
+        target_x = current_pos[0] + (self._patrol_direction * move_distance)
+        
+        # 邊界檢查，防止超出畫面
+        if target_x > 0.9:
+            self._patrol_direction = -1
+            target_x = 0.9
+        elif target_x < 0.1:
+            self._patrol_direction = 1
+            target_x = 0.1
+            
+        return (target_x, current_pos[1])
+
+    def set_shared_detection_callback(self, callback):
+        """設置共享怪物檢測結果回調函數"""
+        self._get_shared_monster_detection = callback
+        self.logger.info("戰鬥系統已連接共享怪物檢測服務")
+    
+    def set_shared_health_detection_callback(self, callback):
+        """設置共享角色血條檢測結果回調函數"""
+        self._get_shared_health_detection = callback
+        self.logger.info("戰鬥系統已連接共享血條檢測服務")
 
 def check_auto_combat_status(ro_helper):
     """檢查自動戰鬥狀態"""
     if hasattr(ro_helper, 'auto_combat'):
         combat = ro_helper.auto_combat
-        print(f"⚔️ 自動戰鬥啟用: {combat.is_enabled}")
-        print(f"🎯 自動瞄準: {combat.auto_target_enabled}")
-        print(f"🔍 打怪模式: {combat.auto_hunt_mode}")
+        pass
+        pass
+        pass
         # 檢查控制器
         if combat.controller:
-            print(f"🎮 控制器連接: {combat.controller.is_connected}")
-            print(f"📱 設備ID: {getattr(combat.controller, 'device_id', None)}")
+            pass
+            pass
         else:
-            print("❌ 戰鬥系統沒有控制器")
-            # 嘗試重新初始化
-            combat._init_adb()
+            pass
+            # ADB 控制器已移除 - 楓之谷 Worlds 原生遊戲
+            pass
     else:
-        print("❌ 自動戰鬥系統不存在")
+        pass
 
 
 def reinitialize_control_system(ro_helper):
     """重新初始化控制系統"""
     try:
-        print("🔄 重新初始化控制系統...")
-        # 1. 確保ADB連接
+        pass
+        # ADB 控制器已移除 - 楓之谷 Worlds 原生遊戲
         if hasattr(ro_helper, 'auto_combat'):
             ro_helper.auto_combat.controller = None
-            ro_helper.auto_combat._init_adb()
+            # ADB 初始化已移除
             if ro_helper.auto_combat.controller and ro_helper.auto_combat.controller.is_connected:
-                print("✅ 控制器重新初始化成功")
+                pass
                 return True
             else:
-                print("❌ 控制器重新初始化失敗")
+                pass
         else:
-            print("❌ ro_helper 沒有 auto_combat")
+            pass
         return False
     except Exception as e:
-        print(f"❌ 重新初始化失敗: {e}")
+        pass
         return False

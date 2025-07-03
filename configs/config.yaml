@@ -1,8 +1,8 @@
-# configs/bluestacks.yaml - 集中管理所有參數 (需用UTF-8編碼保存)
+# configs/config.yaml - MapleHelper 設定檔 (需用UTF-8編碼保存)
 
 # 基本設定
 app:
-  window_title: "BlueStacks App Player"
+  window_title: "MapleStory Worlds-Artale (繁體中文版)"
   capture_region: [0, 0, 1920, 1080]
   detection_threshold: 0.3
   update_interval: 3000
@@ -10,23 +10,32 @@ app:
 
 # 畫面捕捉器設定
 capturer:
-  cache_duration: 0.1              # 畫面緩存時間 (秒)
-  min_capture_interval: 0.05       # 最小捕捉間隔 (20 FPS)
-  max_capture_interval: 0.2        # 最大捕捉間隔 (5 FPS)
-  timeout: 2                       # ADB 命令超時時間 (秒)
+  capture_mode: "window"           # 捕捉模式: "window" (使用 Windows Graphics API)
+  window_title: "MapleStory Worlds-Artale (繁體中文版)"  # 要捕捉的視窗標題
+  cache_duration: 0.05             # 畫面緩存時間 (秒)
+  min_capture_interval: 0.02       # 最小捕捉間隔 (50 FPS)
+  max_capture_interval: 0.1        # 最大捕捉間隔 (10 FPS)
   max_errors: 5                    # 最大錯誤次數
   error_reset_time: 10             # 錯誤計數重置時間 (秒)
 
 # 主循環更新頻率設定
 main_loop:
-  frame_capture: 0.05              # 畫面捕捉頻率 (20 FPS)
-  position_tracking: 0.1           # 位置追蹤頻率 (10 FPS)
-  combat_update: 0.2               # 戰鬥更新頻率 (5 FPS)
+  frame_capture: 0.02              # 畫面捕捉頻率 (50 FPS)
+  position_tracking: 0.05          # 位置追蹤頻率 (20 FPS)
+  combat_update: 0.1               # 戰鬥更新頻率 (10 FPS)
   health_check: 1.0                # 血條檢查頻率 (1 FPS)
   status_update: 0.5               # 狀態更新頻率 (2 FPS)
   sleep_time: 0.02                 # 主循環睡眠時間 (秒)
 
-# 模板匹配設定
+# 怪物檢測設定
+monster_detection:
+  template_dir: "templates/monsters"        # 怪物模板資料夾
+  confidence_threshold: 0.6               # 檢測信心度閾值
+  max_detections_per_frame: 20               # 每幀最大檢測數量
+  scale_factor: 0.7                         # 圖像縮放係數 (0.7 = 70%縮放以提速)
+  max_processing_time: 1.0                  # 最大處理時間(秒)
+
+# 模板匹配設定 (角色定位用)
 template_matcher:
   corner_templates:
     topleft: "minimap/topleft.png"
@@ -35,32 +44,12 @@ template_matcher:
     bottomright: "minimap/bottom_right.png"
   player_template_name: "minimap/player_marker.png"
   player_threshold: 0.65           # 角色模板匹配閾值
+  minimap_corner_threshold: 0.7    # 小地圖角點檢測閾值
   smooth_factor: 0.8               # 平滑因子
   use_hsv_filter: true             # 啟用 HSV 過濾
   hsv_yellow_lower: [20, 100, 100] # 黃色 HSV 下限
   hsv_yellow_upper: [35, 255, 255] # 黃色 HSV 上限
-
-# UI 模板路徑
-ui_templates:
-  menu: "templates/MainScreen/MenuUi.png"
-  team: "templates/MainScreen/TeamUi.png"
-  newui: "templates/MainScreen/NewUi.png"
-  health: "templates/MainScreen/Health.png"
-  closeui: "templates/MainScreen/CloseUi.png"
-
-# 血條偵測設定
-health_detector:
-  border_template: "templates/MainScreen/HealthBar.png"  # 血條邊框模板
-  threshold: 0.6                   # 模板匹配閾值
-  canny_low: 30                    # Canny 邊緣低閾值
-  canny_high: 100                  # Canny 邊緣高閾值
-  color_ratio_threshold: 0.1       # 顏色像素比例
-  min_color_pixels: 20             # 最小顏色像素數
-  hud_threshold: 0.3               # HUD 模板匹配閾值
-  bar_threshold: 0.2               # 血條模板匹配閾值
-  cache_timeout: 1.0               # 快取超時時間 (秒)
-  overlap_threshold: 0.3           # 重疊檢測閾值
-
+  
 # 戰鬥系統設定
 combat:
   attack_range: 0.4                # 攻擊範圍
@@ -76,6 +65,31 @@ combat:
   emergency_move_duration: 0.3     # 緊急移動時間 (秒)
   forbidden_threshold: 0.02        # 禁區檢測閾值
   same_position_tolerance: 0.005   # 相同位置容差
+  use_health_bar_tracking: true    # 啟用血條追蹤定位角色
+  health_detection_interval: 0.1   # 血條檢測間隔 (秒)
+
+# HUD血條檢測設定 (單模板結構化匹配)
+hud_detection:
+  match_threshold: 0.7             # 模板匹配閾值
+  scale_range: [0.8, 1.2]          # 尺度範圍
+  scale_steps: 5                   # 尺度步數
+  search_region_ratio: 0.3         # 搜索區域比例
+
+# HUD OCR設定
+hud_ocr:
+  enabled: true                    # 啟用HUD OCR功能
+  tesseract_path: "tessdataOCR/tesseract.exe"  # Tesseract執行檔路徑
+  confidence_threshold: 50         # OCR信心度閾值
+
+# 角色血條檢測設定 (結構化單模板)
+simple_character_health:
+  template_thresholds:
+    'structure': 0.5               # 結構化模板閾值（降低以提高檢測率）
+  fill_analysis_threshold: 0.1   # 填充分析閾值（降低以提高檢測率）
+  max_detections: 1                # 最大檢測數量
+  hp_color_range:
+    lower: [0, 30, 30]             # 紅色範圍下限（適應透明效果）
+    upper: [20, 255, 255]          # 紅色範圍上限
 
 # 路徑點系統設定
 waypoint_system:
@@ -102,18 +116,10 @@ gui:
   error_sleep_time: 0.01           # 錯誤時睡眠時間 (秒)
   wait_time: 0.2                   # 等待時間 (秒)
 
-# 顏色設定 (HSV 範圍)
-colors:
-  green_lower: [35, 100, 50]       # 綠色下限 (玩家血條)
-  green_upper: [85, 255, 255]      # 綠色上限
-  red_lower1: [0, 120, 70]         # 紅色下限1 (怪物血條)
-  red_upper1: [10, 255, 255]       # 紅色上限1
-  red_lower2: [170, 120, 70]       # 紅色下限2 (怪物血條)
-  red_upper2: [180, 255, 255]      # 紅色上限2
-
-# 效能設定
-performance:
-  max_loop_time: 0.02              # 最大循環時間 (秒)
-  min_sleep_time: 0.001            # 最小睡眠時間 (秒)
-  fps_target: 50                   # 目標 FPS
-  memory_limit: 100                # 記憶體限制 (MB)
+# 調試設定
+debug:
+  save_ocr_images: false            # 是否保存OCR二值化圖像（調試用）
+  save_match_images: false          # 是否保存模板匹配圖像（調試用）
+  save_debug_frames: false          # 是否保存調試畫面
+  debug_output_dir: "debug_output"  # 調試檔案輸出目錄
+  max_debug_files: 100             # 最大調試檔案數量 

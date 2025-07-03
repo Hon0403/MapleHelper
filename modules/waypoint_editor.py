@@ -13,7 +13,7 @@ import subprocess
 import hashlib
 import threading
 from modules.simple_waypoint_system import SimpleWaypointSystem
-from modules.coordinate import simple_coordinate_conversion
+from modules.coordinate import simple_coordinate_conversion, unified_coordinate_conversion, unified_relative_to_canvas
 
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
@@ -267,6 +267,10 @@ class WaypointEditor(QMainWindow):
     def __init__(self, waypoint_system, tracker=None, config=None):
         super().__init__()
         
+        # ✅ 添加 logger 初始化
+        from includes.log_utils import get_logger
+        self.logger = get_logger("WaypointEditor")
+        
         # 基本設定
         self.waypoint_system = waypoint_system
         self.tracker = tracker
@@ -329,12 +333,10 @@ class WaypointEditor(QMainWindow):
         
         self._create_editor_interface(main_layout)
 
-    def showEvent(self, event: QShowEvent):
-        """覆寫 showEvent，在視窗首次顯示時觸發異步載入"""
+    def showEvent(self, event):
         super().showEvent(event)
-        if self.first_show:
-            self.first_show = False
-            self._show_loading_and_start_async_load()
+        # 每次顯示時自動嘗試載入小地圖
+        self._show_loading_and_start_async_load()
 
     def closeEvent(self, event: QCloseEvent):
         """覆寫 closeEvent，改為隱藏視窗以保留狀態"""
@@ -372,14 +374,17 @@ class WaypointEditor(QMainWindow):
 
             self.minimap_loading = False
             
+            # ✅ 使用 QTimer 確保UI更新在主執行緒中進行
             if success:
-                self.status_label.setText("小地圖載入成功")
-                self._finalize_ui_after_load()
+                QTimer.singleShot(0, lambda: self.status_label.setText("小地圖載入成功"))
+                QTimer.singleShot(0, self._finalize_ui_after_load)
             else:
-                self.status_label.setText("小地圖載入失敗，請手動重試")
+                QTimer.singleShot(0, lambda: self.status_label.setText("小地圖載入失敗，請手動重試"))
             
         except Exception as e:
             self.minimap_loading = False
+            QTimer.singleShot(0, lambda: self.status_label.setText(f"載入錯誤: {str(e)}"))
+            self.logger.error(f"小地圖載入錯誤: {e}")
             import traceback
             traceback.print_exc()
 
@@ -437,44 +442,99 @@ class WaypointEditor(QMainWindow):
             tools_layout.addWidget(btn)
             
     def _load_minimap(self):
-        """修正版：確保統一處理流程"""
+        """載入小地圖資訊 - 修復版"""
         try:
-            if not self._check_prerequisites():
+            self.logger.debug("開始載入小地圖...")
+            # 檢查必要條件
+            if not self._check_minimap_requirements():
+                self.logger.error("必要條件檢查失敗")
                 return False
-            # 嘗試偵測小地圖
-            success = self.tracker.find_minimap()
-            if not success:
+            
+            self.logger.debug("必要條件檢查通過")
+            
+            # 偵測小地圖位置
+            self.logger.debug("嘗試偵測小地圖...")
+            current_frame = self.tracker.capturer.grab_frame()
+            if current_frame is None:
+                self.logger.error("無法獲取當前畫面")
                 return False
+                
+            minimap_rect = self.tracker._find_minimap_with_subpixel_accuracy(current_frame)
+            
+            if not minimap_rect:
+                self.logger.error("小地圖偵測失敗")
+                return False
+            
+            self.logger.debug("小地圖偵測成功")
+            
             # 獲取小地圖圖片
-            minimap_img = self.tracker.minimap_img
+            self.logger.debug("獲取小地圖圖片...")
+            x1, y1, x2, y2 = minimap_rect
+            minimap_img = current_frame[y1:y2, x1:x2]
+            
             if minimap_img is None:
+                self.logger.error("小地圖圖片為空")
                 return False
-            # ✅ 轉換為PIL格式並處理
-            minimap_rgb = cv2.cvtColor(minimap_img, cv2.COLOR_BGR2RGB)
-            pil_image = Image.fromarray(minimap_rgb)
-            # 使用統一處理
-            return self._process_pil_image(pil_image)
+            
+            self.logger.debug(f"小地圖圖片尺寸: {minimap_img.shape}")
+            
+            # 轉換圖片格式
+            self.logger.debug("轉換圖片格式...")
+            pil_image = Image.fromarray(cv2.cvtColor(minimap_img, cv2.COLOR_BGR2RGB))
+            
+            self.logger.debug(f"PIL圖片尺寸: {pil_image.size}")
+            
+            # 處理圖片
+            self.logger.debug("處理圖片...")
+            self.minimap_image = pil_image  # 修正：使用 minimap_image 而不是 minimap_pil
+            self.minimap_rect = minimap_rect
+            self.minimap_size = pil_image.size
+            
+            self.logger.info("小地圖載入完成")
+            return True
+            
         except Exception as e:
+            self.logger.error("圖片處理失敗")
+            import traceback
+            traceback.print_exc()
+            
+            self.logger.error(f"小地圖載入失敗: {e}")
             return False
 
-    def _check_prerequisites(self):
+    def _check_minimap_requirements(self):
         """檢查必要條件"""
         try:
             # 檢查tracker是否存在
             if not self.tracker:
+                self.logger.error("Tracker未設置")
                 return False
+            self.logger.info("✅ Tracker檢查通過")
+            
             # 檢查capturer是否存在
             if not hasattr(self.tracker, 'capturer') or not self.tracker.capturer:
+                self.logger.error("Capturer未設置")
                 return False
-            # 檢查ADB連接
-            if not self.tracker.capturer.is_connected:
+            self.logger.info("✅ Capturer檢查通過")
+            
+            # 檢查視窗連接狀態
+            capture_info = self.tracker.capturer.get_capture_info()
+            if not capture_info.get('is_connected', False):
+                self.logger.error("視窗未連接")
                 return False
+            self.logger.info("✅ 視窗連接檢查通過")
+            
             # 測試畫面捕捉
             test_frame = self.tracker.capturer.grab_frame()
             if test_frame is None:
+                self.logger.error("無法捕獲畫面")
                 return False
+            self.logger.info(f"✅ 畫面捕捉檢查通過，尺寸: {test_frame.shape}")
+            
             return True
         except Exception as e:
+            self.logger.error(f"檢查必要條件時發生錯誤: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def _process_pil_image(self, image):
@@ -525,24 +585,40 @@ class WaypointEditor(QMainWindow):
             return QImage(400, 300, QImage.Format_RGB888)
 
     def _canvas_to_relative(self, canvas_x, canvas_y):
-        """AutoMaple風格：畫布座標轉相對座標"""
+        """✅ 統一座標轉換：畫布座標轉相對座標"""
         if not self._minimap_display_info or not self._minimap_size:
             return None
+        
         canvas_size = (self.canvas.width() or 800, self.canvas.height() or 600)
         minimap_size = (
             self._minimap_display_info['display_width'],
             self._minimap_display_info['display_height']
         )
-        return simple_coordinate_conversion(canvas_x, canvas_y, canvas_size, minimap_size)
+        
+        # 使用統一座標轉換函式
+        return unified_coordinate_conversion(
+            canvas_x, canvas_y, 
+            canvas_size, minimap_size, 
+            precision=5
+        )
 
     def _relative_to_canvas(self, rel_x, rel_y):
-        """AutoMaple風格：相對座標轉畫布座標"""
+        """✅ 統一座標轉換：相對座標轉畫布座標"""
         if not self._minimap_display_info or not self._minimap_size:
             return None
-        display_info = self._minimap_display_info
-        canvas_x = rel_x * display_info['display_width'] + display_info['offset_x']
-        canvas_y = rel_y * display_info['display_height'] + display_info['offset_y']
-        return int(canvas_x), int(canvas_y)
+        
+        canvas_size = (self.canvas.width() or 800, self.canvas.height() or 600)
+        minimap_size = (
+            self._minimap_display_info['display_width'],
+            self._minimap_display_info['display_height']
+        )
+        
+        # 使用統一座標轉換函式
+        return unified_relative_to_canvas(
+            rel_x, rel_y, 
+            canvas_size, minimap_size, 
+            precision=1
+        )
 
 
     def _create_canvas_area(self, parent):
@@ -932,26 +1008,83 @@ class WaypointEditor(QMainWindow):
 
     # =============== 座標轉換 ===============
 
-    def _load_minimap(self):
-        """修正版：確保統一處理流程"""
+    def _load_minimap_image(self):
+        """載入小地圖圖片"""
         try:
-            if not self._check_prerequisites():
+            self.logger.info("開始載入小地圖...")
+            
+            # 檢查必要條件
+            if not hasattr(self, 'tracker') or not self.tracker:
+                self.logger.error("Tracker未設置")
                 return False
-            # 嘗試偵測小地圖
-            success = self.tracker.find_minimap()
-            if not success:
+            
+            if not hasattr(self.tracker, 'capturer') or not self.tracker.capturer:
+                self.logger.error("Capturer未設置")
                 return False
+            
+            self.logger.info("必要條件檢查通過")
+            
+            # 偵測小地圖
+            self.logger.info("嘗試偵測小地圖...")
+            current_frame = self.tracker.capturer.grab_frame()
+            if current_frame is None:
+                self.logger.error("無法獲取當前畫面")
+                return False
+            
+            self.logger.info("小地圖偵測成功")
+            
             # 獲取小地圖圖片
-            minimap_img = self.tracker.minimap_img
-            if minimap_img is None:
+            self.logger.info("獲取小地圖圖片...")
+            minimap_rect = self.tracker._find_minimap_with_subpixel_accuracy(current_frame)
+            if not minimap_rect:
+                self.logger.error("小地圖偵測失敗")
                 return False
-            # ✅ 轉換為PIL格式並處理
-            minimap_rgb = cv2.cvtColor(minimap_img, cv2.COLOR_BGR2RGB)
-            pil_image = Image.fromarray(minimap_rgb)
-            # 使用統一處理
-            return self._process_pil_image(pil_image)
+                
+            x1, y1, x2, y2 = minimap_rect
+            minimap_img = current_frame[y1:y2, x1:x2]
+            
+            if minimap_img is None:
+                self.logger.error("小地圖圖片為空")
+                return False
+            
+            self.logger.info(f"小地圖圖片尺寸: {minimap_img.shape}")
+            
+            # 轉換為PIL圖片
+            self.logger.info("轉換圖片格式...")
+            pil_image = Image.fromarray(cv2.cvtColor(minimap_img, cv2.COLOR_BGR2RGB))
+            self.logger.info(f"PIL圖片尺寸: {pil_image.size}")
+            
+            # 處理圖片
+            self.logger.info("處理圖片...")
+            self.minimap_image = pil_image
+            self.logger.info("小地圖載入完成")
+            return True
+            
         except Exception as e:
+            self.logger.error(f"圖片處理失敗: {e}")
+            self.logger.error(f"小地圖載入失敗: {e}")
             return False
+
+    def _set_minimap_background(self):
+        """設置小地圖背景圖片"""
+        try:
+            if not hasattr(self, 'minimap_image') or not self.minimap_image:
+                return
+                
+            # 處理小地圖圖片
+            processed_image = self._process_pil_image(self.minimap_image)
+            
+            # 轉換為QPixmap並設置為背景
+            qimage = self._pil_to_qimage(processed_image)
+            qpixmap = QPixmap.fromImage(qimage)
+            self.canvas.set_background_image(qpixmap)
+            
+            self.logger.debug("小地圖背景設置完成")
+            
+        except Exception as e:
+            self.logger.error(f"設置小地圖背景失敗: {e}")
+            import traceback
+            traceback.print_exc()
 
     # =============== 繪製方法 ===============
 
@@ -960,11 +1093,12 @@ class WaypointEditor(QMainWindow):
         try:
             if not hasattr(self, 'canvas') or not self.canvas:
                 return
+                
             # ✅ 1. 清除所有繪製項目（但保留背景圖片）
             self.canvas.clear_all_items()
+            
             # ✅ 2. 確保背景圖片存在或顯示載入中
             if self.minimap_loading:
-                self.canvas.clear_all_items()
                 loading_item = {
                     'type': 'text',
                     'x': self.canvas.width() / 2 - 50,
@@ -976,9 +1110,9 @@ class WaypointEditor(QMainWindow):
                 self.canvas.add_drawing_item(loading_item)
                 return
 
-            if not hasattr(self, 'minimap_photo') or not self.minimap_photo:
-                # 可以選擇繪製一個提示，而不是直接返回
-                self.canvas.clear_all_items()
+            # ✅ 檢查小地圖圖片是否存在
+            if not hasattr(self, 'minimap_image') or not self.minimap_image:
+                # 顯示載入失敗提示
                 no_map_item = {
                     'type': 'text',
                     'x': self.canvas.width() / 2 - 100,
@@ -990,7 +1124,11 @@ class WaypointEditor(QMainWindow):
                 self.canvas.add_drawing_item(no_map_item)
                 return
             
-            # ✅ 3. 按順序繪製所有元素（根據 checkbox 狀態）
+            # ✅ 3. 設置小地圖背景圖片
+            if hasattr(self, 'minimap_image') and self.minimap_image:
+                self._process_pil_image(self.minimap_image)
+            
+            # ✅ 4. 按順序繪製所有元素（根據 checkbox 狀態）
             
             # 繪製網格（如果啟用）
             if self.show_grid:

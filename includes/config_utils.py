@@ -4,6 +4,9 @@ import yaml
 import json
 import os
 from typing import Dict, Any, Optional, Union
+import logging
+
+logger = logging.getLogger(__name__)
 
 class ConfigUtils:
     """配置檔案處理共用工具"""
@@ -26,7 +29,7 @@ class ConfigUtils:
             return {}
             
         except Exception as e:
-            print(f"❌ 載入配置失敗 {config_path}: {e}")
+            logger.error(f"載入配置失敗 {config_path}: {e}")
             return default_config or {}
     
     @staticmethod
@@ -38,7 +41,7 @@ class ConfigUtils:
                 yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
             return True
         except Exception as e:
-            print(f"❌ 保存配置失敗 {config_path}: {e}")
+            logger.error(f"保存配置失敗 {config_path}: {e}")
             return False
     
     @staticmethod
@@ -57,7 +60,7 @@ class ConfigUtils:
             return {}
             
         except Exception as e:
-            print(f"❌ 載入 JSON 配置失敗 {config_path}: {e}")
+            logger.error(f"載入 JSON 配置失敗 {config_path}: {e}")
             return default_config or {}
     
     @staticmethod
@@ -69,7 +72,7 @@ class ConfigUtils:
                 json.dump(config, f, indent=2, ensure_ascii=False)
             return True
         except Exception as e:
-            print(f"❌ 保存 JSON 配置失敗 {config_path}: {e}")
+            logger.error(f"保存 JSON 配置失敗 {config_path}: {e}")
             return False
     
     @staticmethod
@@ -136,3 +139,7 @@ class ConfigSection:
 def create_config_section(config: Dict, section_name: str) -> ConfigSection:
     """創建配置區段讀取器"""
     return ConfigSection(config, section_name)
+
+def load_config(config_path: str) -> Dict[str, Any]:
+    """載入配置檔的簡化函數"""
+    return ConfigUtils.load_yaml_config(config_path)

@@ -1,430 +1,341 @@
-# includes/simple_template_utils.py - 完整修正版本
+# simple_template_utils.py - 極簡版檢測器
 
-from collections import deque
 import cv2
 import numpy as np
 import os
 import time
 from typing import List, Dict
-import queue
-import threading
+from includes.log_utils import get_logger
 
-class MapleStoryMonsterDetector:
-    """RO怪物檢測器 - 基於成功測試的平衡參數"""
+
+class SimpleMonsterDetector:
+    """🚀 極簡化怪物檢測器 - 純模板匹配，無額外處理"""
     
-    def __init__(self, template_dir='templates\\monsters'):
+    def __init__(self, template_dir="templates/monsters", config=None):
+        """初始化極簡檢測器"""
         self.template_dir = template_dir
         self.templates = []
+        self.confidence_threshold = 0.6
+        self.max_detections = 20
+        self.scale_factor = 0.7
+        self.max_processing_time = 1.0
         
-        # ✅ 添加缺失的屬性
-        self.single_templates = []
-        self.animated_templates = {}  # 動畫模板字典
+        # 從設定檔載入參數
+        if config:
+            monster_config = config.get('monster_detection', {})
+            self.confidence_threshold = monster_config.get('confidence_threshold', 0.6)
+            self.max_detections = monster_config.get('max_detections_per_frame', 20)
+            self.scale_factor = monster_config.get('scale_factor', 0.7)
+            self.max_processing_time = monster_config.get('max_processing_time', 1.0)
         
-        # 成功的檢測參數
-        self.confidence_threshold = 0.08
-        self.spatial_distance_threshold = 100
-        self.detection_history = deque(maxlen=3)
-        # 簡化設定
-        self.enable_roi_templates = False
-        self.enable_background_removal = True
-        self.bg_removal_method = 'gentle_enhancement'
+        self.logger = get_logger("SimpleTemplateUtils")
+        self.logger.info(f"設定檔參數: 閾值={self.confidence_threshold}, 最大檢測={self.max_detections}, 縮放={self.scale_factor}, 超時={self.max_processing_time}秒")
         
-        # 初始化檢測器
-        self.use_sift = self._init_detector()
-        self._setup_matcher()
+        self.logger.info(f"初始化極簡檢測器，模板目錄: {template_dir}")
         self._load_templates()
-        self._init_animated_templates()
+        self.logger.info(f"極簡檢測器就緒: {len(self.templates)} 個模板")
     
-    def _init_detector(self):
+    def detect_monsters(self, game_frame: np.ndarray, frame_history=None) -> List[Dict]:
+        """🚀 極簡化檢測器 - 純模板匹配，加效能優化"""
+        if game_frame is None or not self.templates:
+            return []
+        
         try:
-            self.detector = cv2.SIFT_create(
-                nfeatures=1000,
-                contrastThreshold=0.04,
-                edgeThreshold=10,
-                sigma=1.6
-            )
-            self.use_sift = True   # 改回True
-            return True            # 改回True
-        except AttributeError:
-            self.detector = cv2.ORB_create(nfeatures=800)
-            return False
-    
-    def _setup_matcher(self):
-        """✅ 基於搜索結果[4][9]的FLANN性能優化"""
-        if self.use_sift:
-            FLANN_INDEX_KDTREE = 1
-            index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=3)  # 從5降到3
-            search_params = dict(checks=30)                            # 從50降到30
-            self.matcher = cv2.FlannBasedMatcher(index_params, search_params)
-        else:
-            # ORB配置保持不變
-            FLANN_INDEX_LSH = 6
-            index_params = dict(
-                algorithm=FLANN_INDEX_LSH,
-                table_number=4,     # 從6降到4
-                key_size=12,
-                multi_probe_level=1
-            )
-            search_params = dict(checks=30)  # 從50降到30
-            self.matcher = cv2.FlannBasedMatcher(index_params, search_params)
+            start_time = time.time()
+            
+            # 轉灰階
+            gray = cv2.cvtColor(game_frame, cv2.COLOR_BGR2GRAY) if len(game_frame.shape) == 3 else game_frame
+            
+            # 🚀 效能優化：縮小圖像進行快速檢測（從設定檔讀取）
+            small_gray = cv2.resize(gray, None, fx=self.scale_factor, fy=self.scale_factor)
+            
+            results = []
+            
+            # 直接模板匹配 - 使用所有模板但加入早停機制
+            for i, template_info in enumerate(self.templates):
+                template = template_info['image']
+                
+                # 🚀 效能優化：同樣縮小模板（從設定檔讀取）
+                small_template = cv2.resize(template, None, fx=self.scale_factor, fy=self.scale_factor)
+                
+                # 🚀 效能優化：超時檢查（從設定檔讀取）
+                if time.time() - start_time > self.max_processing_time:
+                    self.logger.warning(f"⚠️ 檢測超時，已處理 {i+1}/{len(self.templates)} 個模板")
+                    break
+                
+                # 單一尺度匹配（使用縮小的圖像）
+                result = cv2.matchTemplate(small_gray, small_template, cv2.TM_CCOEFF_NORMED)
+                min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+                
+                if max_val >= self.confidence_threshold:
+                    # 🚀 將座標還原到原始尺寸
+                    x, y = max_loc
+                    h, w = small_template.shape
+                    
+                    # 還原到原始座標（從設定檔讀取縮放係數）
+                    orig_x = int(x / self.scale_factor)
+                    orig_y = int(y / self.scale_factor)
+                    orig_w = int(w / self.scale_factor)
+                    orig_h = int(h / self.scale_factor)
+                    
+                    results.append({
+                        'bbox': (orig_x, orig_y, orig_w, orig_h),
+                        'confidence': float(max_val),
+                        'template_name': template_info['name'],
+                        'name': template_info['name'],
+                        'position': (orig_x + orig_w//2, orig_y + orig_h//2),
+                        'x': orig_x, 'y': orig_y, 'width': orig_w, 'height': orig_h,
+                        'detection_level': 'fast'
+                    })
+                
+                # 🚀 早停機制：找到足夠的結果就停止
+                if len(results) >= self.max_detections:
+                    self.logger.warning(f"🎯 已找到 {len(results)} 個目標，提前停止檢測")
+                    break
+            
+            # 簡單去重：只保留信心度最高的前5個
+            if len(results) > self.max_detections:
+                results.sort(key=lambda x: x['confidence'], reverse=True)
+                results = results[:self.max_detections]
+            
+            detection_time = time.time() - start_time
+            if results:
+                self.logger.info(f"🎯 快速檢測到 {len(results)} 個怪物 (耗時: {detection_time:.3f}秒)")
+            
+            return results
+            
+        except Exception as e:
+            self.logger.error(f"❌ 簡單檢測失敗: {e}")
+            return []
     
     def _load_templates(self):
-        """載入模板"""
+        """載入模板 - 修復版，支援UTF-8編碼"""
         try:
+            if not os.path.exists(self.template_dir):
+                self.logger.warning(f"⚠️ 模板目錄不存在: {self.template_dir}")
+                return
+            
+            # 確保正確處理編碼
             for item in os.listdir(self.template_dir):
+                # 確保item是正確的字符串
+                if isinstance(item, bytes):
+                    item = item.decode('utf-8', errors='ignore')
+                    
                 item_path = os.path.join(self.template_dir, item)
                 
                 if os.path.isdir(item_path):
                     for filename in os.listdir(item_path):
+                        # 確保filename是正確的字符串
+                        if isinstance(filename, bytes):
+                            filename = filename.decode('utf-8', errors='ignore')
+                            
                         if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-                            if not self.enable_roi_templates and '_roi' in filename.lower():
-                                continue
                             file_path = os.path.join(item_path, filename)
                             full_name = f"{item}/{filename}"
+                            self.logger.info(f"🔍 載入模板: {full_name}")  # 調試輸出
                             self._process_template(file_path, full_name)
                 
                 elif item.lower().endswith(('.png', '.jpg', '.jpeg')):
-                    if not self.enable_roi_templates and '_roi' in item.lower():
-                        continue
                     file_path = os.path.join(self.template_dir, item)
+                    self.logger.info(f"🔍 載入模板: {item}")  # 調試輸出
                     self._process_template(file_path, item)
             
-            # ✅ 同時填充single_templates以確保相容性
-            self.single_templates = self.templates.copy()
+            self.logger.info(f"📁 已載入 {len(self.templates)} 個模板")
+            
+            # 調試：顯示載入的模板名稱
+            for i, template in enumerate(self.templates[:5]):  # 只顯示前5個
+                self.logger.info(f"  #{i+1}: {template['name']}")
             
         except Exception as e:
-            print(f"❌ 載入模板失敗: {e}")
-    
-    def _init_animated_templates(self):
-        """✅ 初始化動畫模板字典"""
-        # 根據載入的模板生成動畫模板映射
-        self.animated_templates = {}
-        
-        # 按怪物名稱分組模板
-        monster_groups = {}
-        for template in self.templates:
-            name = template['name']
-            # 提取怪物基礎名稱（去除動作和方向）
-            base_name = name.split('/')[0] if '/' in name else name.split('_')[0]
-            
-            if base_name not in monster_groups:
-                monster_groups[base_name] = []
-            monster_groups[base_name].append(template)
-        
-        # 為每個怪物創建動畫幀列表
-        for monster_name, templates in monster_groups.items():
-            self.animated_templates[monster_name] = templates
+            self.logger.error(f"❌ 載入模板失敗: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _process_template(self, file_path, template_name):
-        """✅ 處理單個模板 - 使用高級灰階轉換"""
-        template_img = self._safe_imread(file_path, cv2.IMREAD_UNCHANGED)
-        if template_img is None:
-            return
+        """處理單個模板 - 修復版，支援UTF-8編碼"""
+        try:
+            template_img = self._safe_imread(file_path, cv2.IMREAD_UNCHANGED)
+            if template_img is None:
+                return
 
-        # 處理透明圖
-        if len(template_img.shape) == 3 and template_img.shape[2] == 4:
-            alpha = template_img[:, :, 3]
-            bgr = template_img[:, :, :3]
-            bg = np.full(bgr.shape, 200, dtype=np.uint8)
-            template_bgr = np.where(alpha[..., None] == 0, bg, bgr)
-        else:
-            template_bgr = template_img
+            # 處理透明圖
+            if len(template_img.shape) == 3 and template_img.shape[2] == 4:
+                alpha = template_img[:, :, 3]
+                bgr = template_img[:, :, :3]
+                bg = np.full(bgr.shape, 200, dtype=np.uint8)
+                template_bgr = np.where(alpha[..., None] == 0, bg, bgr)
+            else:
+                template_bgr = template_img
 
-        # ✅ 直接使用高級灰階轉換
-        template_gray = self._advanced_grayscale_conversion(template_bgr)
+            # 轉為灰階用於匹配
+            if len(template_bgr.shape) == 3:
+                template_gray = cv2.cvtColor(template_bgr, cv2.COLOR_BGR2GRAY)
+            else:
+                template_gray = template_bgr
 
-        # 提取特徵
-        kp, des = self.detector.detectAndCompute(template_gray, None)
-
-        if des is not None and len(kp) >= 10:
-            is_flipped = self._is_flipped_template(template_name)
-
+            # 簡單存儲模板
             self.templates.append({
                 'name': template_name,
                 'original_name': template_name,
-                'keypoints': kp,
-                'descriptors': des,
                 'image': template_gray,
-                'size': template_gray.shape,
-                'is_flipped': is_flipped
+                'size': template_gray.shape
             })
+        
+        except Exception as e:
+            self.logger.error(f"❌ 處理模板失敗 {template_name}: {e}")
     
-    def _is_flipped_template(self, template_name):
-        """判斷是否為翻轉模板"""
-        flipped_indicators = ['_flipped', '_flip', '_翻轉', '_left', '_L']
-        return any(indicator in template_name.lower() for indicator in flipped_indicators)
-    
-    def detect_monsters(self, game_frame: np.ndarray) -> List[Dict]:
-        """✅ 簡化版檢測策略"""
-        if game_frame is None:
-            return []
-        
-        # ✅ 檢查是否已經是灰階圖像
-        if len(game_frame.shape) == 2:
-            scene_gray = game_frame
-        else:
-            scene_gray = self._advanced_grayscale_conversion(game_frame)
-        
-        # 特徵檢測
-        scene_kp, scene_des = self.detector.detectAndCompute(scene_gray, None)
-        
-        if scene_des is None:
-            return []
-        
-        # 檢測流程
-        all_detections = self._detect_with_filtering(scene_kp, scene_des, scene_gray)
-        
-        # 空間聚類
-        final_detections = self._overlap_aware_clustering(all_detections)
-        
-        return final_detections
-    
-    def _overlap_aware_clustering(self, detections):
-        """改進的重疊感知聚類"""
-        if not detections:
-            return []
-        
-        # ✅ 更嚴格的品質過濾
-        quality_filtered = [d for d in detections if 
-                        d['confidence'] >= 0.08 and          # 提高最低門檻
-                        d['inlier_ratio'] >= 0.5 and         # 提高內點比例
-                        d['match_count'] >= 5]               # 提高匹配要求
-        
-        # 按信心度排序
-        quality_filtered.sort(key=lambda x: x['confidence'], reverse=True)
-        
-        clustered = []
-        used_positions = []
-        
-        for detection in quality_filtered:
-            pos = detection['position']
-            too_close = False
-            
-            for used_pos in used_positions:
-                distance = np.sqrt((pos[0] - used_pos[0])**2 + (pos[1] - used_pos[1])**2)
-                
-                if distance < 80:  # 適中的聚類距離
-                    too_close = True
-                    break
-            
-            if not too_close:
-                clustered.append(detection)
-                used_positions.append(pos)
-        
-        return clustered[:12]  # 限制最大檢測數量
-
-    def _advanced_grayscale_conversion(self, scene_img):
-        """✅ 直接返回灰階圖像，不轉回BGR"""
+    def _get_display_name(self, template_name):
+        """獲取清晰的顯示名稱，直接顯示原檔案名"""
         try:
-            if len(scene_img.shape) != 3:
-                return scene_img
+            if not template_name:
+                return "Unknown"
             
-            # 標準加權平均
-            weights = np.array([0.114, 0.587, 0.299])
-            gray_result = np.dot(scene_img, weights)
+            # 移除路徑和副檔名
+            display_name = template_name
+            if '/' in display_name:
+                display_name = display_name.split('/')[-1]
+            if '\\' in display_name:
+                display_name = display_name.split('\\')[-1]
             
-            # ✅ 直接返回灰階圖，不轉回BGR
-            gray_result = np.clip(gray_result, 0, 255).astype(np.uint8)
+            # 移除副檔名
+            if '.' in display_name:
+                display_name = display_name.rsplit('.', 1)[0]
             
-            return gray_result  # 直接返回灰階圖
+            # 直接返回處理後的檔案名，不進行硬編碼替換
+            return display_name
             
         except Exception as e:
-            return cv2.cvtColor(scene_img, cv2.COLOR_BGR2GRAY)
+            self.logger.warning(f"⚠️ 名稱處理失敗: {e}")
+            return "Unknown"
     
-    def _detect_with_filtering(self, scene_kp, scene_des, scene_gray):
-        """檢測並過濾"""
-        all_detections = []
-        
-        for template in self.templates:
-            detection = self._match_template(template, scene_kp, scene_des, scene_gray)
-            if detection:
-                all_detections.append(detection)
-        
-        # 按信心度排序
-        all_detections.sort(key=lambda x: x['confidence'], reverse=True)
-        return all_detections
-    
-    def _match_template(self, template, scene_kp, scene_des, scene_gray):
-        """✅ 基於搜索結果[3]的遮擋感知模板匹配"""
-        
-        # ✅ 添加缺少的變數定義
-        template_name = template['name']
-        template_kp = template['keypoints']
-        template_des = template['descriptors']
-        is_flipped = template['is_flipped']
-        
+    def _safe_imread(self, image_path, flags=cv2.IMREAD_COLOR):
+        """安全讀取圖片，支援UTF-8編碼路徑"""
         try:
-            # FLANN匹配
-            if self.use_sift:
-                matches = self.matcher.knnMatch(template_des, scene_des, k=2)
-            else:
-                template_des_float = np.float32(template_des)
-                scene_des_float = np.float32(scene_des)
-                matches = self.matcher.knnMatch(template_des_float, scene_des_float, k=2)
+            # 確保路徑是正確的字符串格式
+            if isinstance(image_path, bytes):
+                image_path = image_path.decode('utf-8', errors='ignore')
             
-            # ✅ 基於搜索結果[3]的改進SIFT匹配
-            # 使用更寬鬆的Lowe's ratio test
-            good_matches = []
-            for match_pair in matches:
-                if len(match_pair) == 2:
-                    m, n = match_pair
-                    # ✅ 遮擋場景使用更寬鬆的比例
-                    ratio_threshold = 0.75 if self.use_sift else 0.8
-                    if m.distance < ratio_threshold * n.distance:
-                        good_matches.append(m)
-            
-            # ✅ 降低最小匹配要求（適應遮擋）
-            MIN_MATCH_COUNT = 3
-            if len(good_matches) < MIN_MATCH_COUNT:
+            # 使用np.fromfile來支援UTF-8路徑
+            img_array = np.fromfile(image_path, dtype=np.uint8)
+            if img_array.size == 0:
+                self.logger.warning(f"⚠️ 檔案為空或無法讀取: {image_path}")
                 return None
             
-            # ✅ 基於搜索結果[1]的多重RANSAC嘗試
-            best_homography = None
-            best_inliers = 0
-            best_mask = None
-            
-            # 嘗試不同的RANSAC參數
-            ransac_configs = [
-                (2.0, 0.99),  # 嚴格
-                (3.0, 0.95),  # 標準
-                (4.0, 0.90),  # 寬鬆（適合遮擋）
-                (5.0, 0.85),  # 非常寬鬆
-            ]
-            
-            src_pts = np.float32([template_kp[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-            dst_pts = np.float32([scene_kp[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-            
-            for threshold, confidence in ransac_configs:
-                try:
-                    M, mask = cv2.findHomography(src_pts, dst_pts,
-                                            cv2.RANSAC, threshold, confidence)
-                    
-                    if M is not None:
-                        inliers = np.sum(mask)
-                        if inliers > best_inliers:
-                            best_homography = M
-                            best_inliers = inliers
-                            best_mask = mask
-                            
-                except Exception:
-                    continue
-            
-            if best_homography is None:
+            img = cv2.imdecode(img_array, flags)
+            if img is None:
+                self.logger.warning(f"⚠️ OpenCV無法解碼圖片: {image_path}")
                 return None
             
-            inlier_ratio = best_inliers / len(good_matches)
-            
-            # ✅ 遮擋感知的內點要求
-            min_inlier_ratio = 0.3
-            min_inliers = 3
-            
-            if inlier_ratio < min_inlier_ratio or best_inliers < min_inliers:
-                return None
-            
-            # ✅ 計算檢測位置（使用最佳單應性矩陣）
-            h, w = template['size']
-            pts = np.float32([[0, 0], [0, h-1], [w-1, h-1], [w-1, 0]]).reshape(-1, 1, 2)
-            dst_corners = cv2.perspectiveTransform(pts, best_homography)
-            
-            # ✅ 遮擋感知的檢測框驗證
-            if not self._occlusion_aware_validate_box(dst_corners, scene_gray.shape):
-                return None
-            
-            center_x = int(np.mean(dst_corners[:, 0, 0]))
-            center_y = int(np.mean(dst_corners[:, 0, 1]))
-            
-            if not self._is_valid_position(center_x, center_y, scene_gray.shape):
-                return None
-            
-            # ✅ 遮擋感知的信心度計算
-            avg_distance = np.mean([good_matches[i].distance for i in range(len(good_matches)) if best_mask[i]])
-            
-            # 基於可見特徵點的比例調整信心度
-            visible_ratio = best_inliers / len(template['keypoints'])  # 可見特徵點比例
-            occlusion_penalty = max(0.5, visible_ratio)  # 遮擋懲罰因子
-            
-            base_confidence = (inlier_ratio * best_inliers * 0.1) / (avg_distance * 0.01 + 1)
-            confidence = base_confidence * occlusion_penalty
-            
-            # 翻轉版本降低信心度
-            flip_penalty = 0.95 if is_flipped else 1.0
-            confidence *= flip_penalty
-            
-            # ✅ 遮擋場景的信心度門檻更低
-            occlusion_threshold = self.confidence_threshold
-            if confidence < occlusion_threshold:
-                return None
-            
-            detection = {
-                'name': template['original_name'],
-                'full_name': template_name,
-                'position': (center_x, center_y),
-                'confidence': confidence,
-                'matches': len(good_matches),
-                'inliers': int(best_inliers),
-                'inlier_ratio': inlier_ratio,
-                'corners': dst_corners,
-                'is_flipped': is_flipped,
-                'direction': "翻轉" if is_flipped else "原始",
-                'avg_distance': avg_distance,
-                'template_name': template['original_name'],
-                'match_count': len(good_matches),
-                'timestamp': time.time(),
-                'occlusion_aware': True,  # ✅ 標記為遮擋感知檢測
-                'visible_ratio': visible_ratio
-            }
-            
-            return detection
-            
+            return img
         except Exception as e:
+            self.logger.warning(f"⚠️ 讀取圖片失敗: {image_path}, 錯誤: {e}")
             return None
-    
-    def _occlusion_aware_validate_box(self, corners, scene_shape):
-        """✅ 基於搜索結果[4]的遮擋感知檢測框驗證"""
+            
+    def load_templates_from_folder(self, folder_path: str) -> bool:
+        """從指定資料夾載入怪物模板 - 修復版，支援UTF-8編碼"""
         try:
-            height, width = scene_shape
-            points = corners.reshape(-1, 2)
-            
-            # ✅ 遮擋場景的更寬鬆範圍檢查
-            margin = 150  # 增加容忍度
-            for point in points:
-                x, y = point
-                if x < -margin or x > width + margin or y < -margin or y > height + margin:
-                    return False
-            
-            # ✅ 遮擋場景的面積檢查
-            box_area = cv2.contourArea(points)
-            scene_area = height * width
-            
-            # 允許更大的檢測框（可能包含遮擋物）
-            if box_area > scene_area * 0.5 or box_area < 100:  # 更寬鬆
+            if not os.path.exists(folder_path):
+                self.logger.error(f"❌ 找不到模板資料夾: {folder_path}")
                 return False
             
-            # ✅ 遮擋場景的長寬比檢查
-            rect = cv2.minAreaRect(points)
-            (center, (w, h), angle) = rect
+            # 清空現有模板
+            self.templates = []
             
-            if w > 0 and h > 0:
-                aspect_ratio = max(w, h) / min(w, h)
-                if aspect_ratio > 8.0:  # 更寬鬆的長寬比（遮擋可能造成變形）
-                    return False
+            # 載入新模板，確保正確處理編碼
+            template_files = []
+            for f in os.listdir(folder_path):
+                # 確保檔案名稱是正確的字符串
+                if isinstance(f, bytes):
+                    f = f.decode('utf-8', errors='ignore')
+                if f.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    template_files.append(f)
+            
+            if not template_files:
+                self.logger.warning(f"⚠️ 資料夾中沒有找到模板圖片: {folder_path}")
+                return False
+            
+            self.logger.info(f"📁 載入模板資料夾: {folder_path}")
+            self.logger.info(f"🔍 找到 {len(template_files)} 個模板檔案")
+            
+            # 載入每個模板
+            for template_file in template_files:
+                template_path = os.path.join(folder_path, template_file)
+                self.logger.info(f"🔍 載入模板: {template_file}")  # 調試輸出
+                self._process_template(template_path, template_file)
+            
+            self.logger.info(f"✅ 成功載入 {len(self.templates)} 個模板")
+            
+            # 調試：顯示載入的模板名稱
+            for i, template in enumerate(self.templates[:5]):  # 只顯示前5個
+                self.logger.info(f"  #{i+1}: {template['name']}")
             
             return True
             
         except Exception as e:
+            self.logger.error(f"❌ 載入模板失敗: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
-    def _is_valid_position(self, x, y, shape):
-        """位置有效性檢查"""
-        height, width = shape
-        return not (x < 40 or x > width - 40 or y < 40 or y > height - 40)
+    def load_template_folder(self, folder_path: str) -> bool:
+        """載入模板資料夾的別名方法（相容性）"""
+        return self.load_templates_from_folder(folder_path)
     
-    def _safe_imread(self, image_path, flags=cv2.IMREAD_COLOR):
-        """安全讀取"""
+    # === 保持相容性的方法 ===
+    
+    def get_animation_info(self):
+        """保持原有介面相容性"""
+        return {
+            'total_templates': len(self.templates),
+            'single_templates': len(self.templates),
+            'animated_templates': len(self.templates),
+            'detection_method': 'simple_template_matching',
+            'confidence_threshold': self.confidence_threshold
+        }
+    
+    def get_monster_info(self):
+        """保持原有介面相容性"""
+        monster_names = set()
+        for t in self.templates:
+            name = t['name']
+            base_name = name.split('/')[0] if '/' in name else name.split('_')[0]
+            monster_names.add(base_name)
+        
+        return {
+            'loaded_monsters': len(monster_names),
+            'total_templates': len(self.templates),
+            'single_templates': len(self.templates),
+            'animated_templates': len(self.templates),
+            'detection_threshold': self.confidence_threshold,
+            'detection_method': 'simple_template_matching'
+        }
+    
+    def get_single_template_info(self):
+        """獲取單一模板信息（相容性方法）"""
+        return {
+            'total_single_templates': len(self.templates),
+            'template_names': [t['name'] for t in self.templates],
+            'detection_method': 'simple_template_matching'
+        }
+    
+    def find_target_monster(self, game_frame, player_screen_pos):
+        """簡化的怪物目標選擇邏輯"""
         try:
-            img_array = np.fromfile(image_path, dtype=np.uint8)
-            return cv2.imdecode(img_array, flags)
-        except Exception:
+            detected_monsters = self.detect_monsters(game_frame)
+            
+            if not detected_monsters:
+                return None
+            
+            # 按信心度選擇最佳目標
+            best_target = max(detected_monsters, key=lambda x: x['confidence'])
+            
+            if best_target:
+                self.logger.info(f"🎯 選擇目標: {best_target['name']} 信心度:{best_target['confidence']:.3f}")
+            
+            return best_target
+            
+        except Exception as e:
+            self.logger.error(f"❌ 怪物目標選擇失敗: {e}")
             return None
     
     def detect_and_save_result(self, game_frame: np.ndarray) -> List[Dict]:
@@ -432,30 +343,21 @@ class MapleStoryMonsterDetector:
         detections = self.detect_monsters(game_frame)
         
         if detections:
-            result_img = self.debug_show_detections_with_boxes(game_frame, detections)
-            if result_img is not None:
-                timestamp = int(time.time())
-                cv2.imwrite(f"detection_result_{timestamp}.png", result_img)
-                print(f"🎯 檢測完成: {len(detections)} 個結果，已保存圖片")
+            self.logger.info(f"🎯 檢測完成: {len(detections)} 個結果")
         else:
-            timestamp = int(time.time())
-            cv2.imwrite(f"no_detection_{timestamp}.png", game_frame)
-            print("📸 無檢測結果，已保存原始畫面")
+            self.logger.info("📸 無檢測結果")
         
         return detections
     
-    def debug_show_detections_with_boxes(self, game_frame: np.ndarray, detections: List[Dict], save_image: bool = True):
-        """可視化檢測結果"""
-        return self.create_detection_visualization(game_frame, detections)
-    
     def create_detection_visualization(self, game_frame, detections):
-        """創建檢測可視化"""
+        """創建檢測可視化 - 方形框版本"""
         try:
             result_image = game_frame.copy()
             
             for i, detection in enumerate(detections):
-                # 根據信心度選擇顏色
                 confidence = detection['confidence']
+                
+                # 根據信心度選擇顏色
                 if confidence >= 0.15:
                     color = (0, 255, 0)      # 綠色：高信心度
                 elif confidence >= 0.08:
@@ -463,25 +365,37 @@ class MapleStoryMonsterDetector:
                 else:
                     color = (255, 0, 255)    # 紫色：低信心度
                 
-                # 畫邊界框
-                corners = detection['corners']
-                cv2.polylines(result_image, [np.int32(corners)], True, color, 2)
+                # 🟦 計算方形邊界框
+                x, y, w, h = detection['bbox']
+                center_x = x + w//2
+                center_y = y + h//2
                 
-                # 畫中心點
-                center = detection['position']
+                # 取較大的邊長作為方形尺寸，並稍微放大一點
+                square_size = max(w, h) + 10  # 增加10像素的邊距
+                half_size = square_size // 2
+                
+                # 計算方形的左上角座標
+                square_x = center_x - half_size
+                square_y = center_y - half_size
+                
+                # 確保方形框不超出畫面邊界
+                frame_h, frame_w = result_image.shape[:2]
+                square_x = max(0, min(square_x, frame_w - square_size))
+                square_y = max(0, min(square_y, frame_h - square_size))
+                
+                # 畫方形邊界框
+                cv2.rectangle(result_image, (square_x, square_y), 
+                            (square_x + square_size, square_y + square_size), color, 2)
+                
+                # 計算中心點
+                center = (center_x, center_y)
                 cv2.circle(result_image, center, 6, color, -1)
                 
                 # 標籤信息
-                direction = "翻" if detection['is_flipped'] else "原"
-                monster_name = detection['name'].split('/')[-1].replace('.png', '')
-                label = f"{i+1}.{monster_name}({direction})"
+                template_name = detection.get('template_name', 'Unknown')
+                monster_name = self._get_display_name(template_name)
+                label = f"{i+1}.{monster_name}"
                 confidence_label = f"{confidence:.3f}"
-                
-                # 顯示距離（如果有）
-                if 'distance' in detection:
-                    distance_label = f"距離:{detection['distance']:.1f}"
-                    cv2.putText(result_image, distance_label, (center[0]-20, center[1]+30),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.3, color, 1)
                 
                 # 主標籤
                 cv2.putText(result_image, label, (center[0]-40, center[1]-20),
@@ -494,344 +408,93 @@ class MapleStoryMonsterDetector:
             return result_image
             
         except Exception as e:
+            self.logger.error(f"❌ 可視化失敗: {e}")
             return None
     
-    # ✅ 保持相容性的方法
-    def get_animation_info(self):
-        """保持原有介面相容性"""
-        return {
-            'total_templates': len(self.templates),
-            'single_templates': len(self.single_templates),
-            'animated_templates': len(self.animated_templates),  # ✅ 添加動畫模板計數
-            'detection_method': 'balanced_sift_flann',
-            'confidence_threshold': self.confidence_threshold
-        }
-    
-    def get_monster_info(self):
-        """保持原有介面相容性"""
-        return {
-            'loaded_monsters': len(set(t['name'].split('/')[0] for t in self.templates if '/' in t['name'])),
-            'total_templates': len(self.templates),
-            'single_templates': len(self.single_templates),
-            'animated_templates': len(self.animated_templates),  # ✅ 添加動畫模板計數
-            'detection_threshold': self.confidence_threshold,
-            'detection_method': 'balanced'
-        }
-    
-    def get_single_template_info(self):
-        """獲取單一模板信息（相容性方法）"""
-        return {
-            'total_single_templates': len(self.single_templates),
-            'template_names': [t['name'] for t in self.single_templates],
-            'detection_method': 'balanced_sift_flann'
-        }
-    
-    def save_current_frame_and_templates(self, game_frame: np.ndarray):
-        """保存當前畫面和模板"""
-        try:
-            timestamp = int(time.time())
-            cv2.imwrite(f"current_frame_{timestamp}.png", game_frame)
-            print(f"📸 保存當前畫面")
-        except Exception as e:
-            print(f"❌ 保存失敗: {e}")
 
-    def find_target_monster(self, game_frame, player_screen_pos):
-        """✅ 怪物目標選擇邏輯"""
-        try:
-            # 執行怪物檢測
-            detected_monsters = self.detect_monsters(game_frame)
-            
-            if not detected_monsters:
-                return None
-            
-            # 按信心度選擇最佳目標
-            best_target = None
-            best_score = 0
-            
-            for monster in detected_monsters:
-                # 信心度分數
-                confidence_score = monster['confidence']
-                
-                # 綜合分數（暫時只用信心度，距離計算複雜）
-                total_score = confidence_score
-                
-                if total_score > best_score:
-                    best_score = total_score
-                    best_target = monster
-            
-            if best_target:
-                print(f"🎯 選擇目標: {best_target['name']} 分數:{best_score:.3f}")
-            
-            return best_target
-            
-        except Exception as e:
-            print(f"❌ 怪物目標選擇失敗: {e}")
-            return None
+# === 全域函數保持相容性 ===
 
-    def load_templates_from_folder(self, folder_path: str) -> bool:
-        """從指定資料夾載入怪物模板"""
-        try:
-            if not os.path.exists(folder_path):
-                print(f"❌ 找不到模板資料夾: {folder_path}")
-                return False
-            
-            # 清空現有模板
-            self.templates = []
-            self.animated_templates = {}
-            
-            # 載入新模板
-            template_files = [f for f in os.listdir(folder_path) 
-                            if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-            
-            if not template_files:
-                print(f"⚠️ 資料夾中沒有找到模板圖片: {folder_path}")
-                return False
-            
-            print(f"📁 載入模板資料夾: {folder_path}")
-            print(f"🔍 找到 {len(template_files)} 個模板檔案")
-            
-            # 載入每個模板
-            for template_file in template_files:
-                template_path = os.path.join(folder_path, template_file)
-                template_img = self._safe_imread(template_path)
-                
-                if template_img is None:
-                    print(f"⚠️ 無法載入模板: {template_file}")
-                    continue
-                
-                # 提取怪物名稱（去除副檔名）
-                monster_name = os.path.splitext(template_file)[0]
-                
-                # 計算特徵點
-                gray = cv2.cvtColor(template_img, cv2.COLOR_BGR2GRAY)
-                keypoints, descriptors = self.detector.detectAndCompute(gray, None)
-                
-                if descriptors is None:
-                    print(f"⚠️ 無法提取特徵點: {template_file}")
-                    continue
-                
-                # 添加到模板列表
-                template = {
-                    'name': monster_name,
-                    'original_name': monster_name,
-                    'image': template_img,
-                    'keypoints': keypoints,
-                    'descriptors': descriptors,
-                    'size': template_img.shape[:2][::-1],  # (width, height)
-                    'is_flipped': False  # 添加 is_flipped 屬性
-                }
-                
-                self.templates.append(template)
-            
-            # 初始化動畫模板
-            self._init_animated_templates()
-            
-            print(f"✅ 成功載入 {len(self.templates)} 個模板")
-            return True
-            
-        except Exception as e:
-            print(f"❌ 載入模板失敗: {e}")
-            return False
+# 創建單一實例
+_monster_detector_instance = None
 
-class UITemplateHelper:
-    def __init__(self, adb, cooldown_interval=0.7):
-        self.adb = adb
-        self.cooldown = {}
-        self.cooldown_interval = cooldown_interval
-
-    def detect_and_click(self, frame, template_path, label, color, key, now, threshold=0.7):
-        import os
-        import cv2
-        if key not in self.cooldown:
-            self.cooldown[key] = 0
-        if now - self.cooldown[key] > self.cooldown_interval:
-            if frame is not None and os.path.exists(template_path):
-                match = self.match_template(frame, template_path, threshold=threshold)
-                if match:
-                    x, y, w, h = match
-                    cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
-                    cv2.putText(frame, label, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-                    if self.adb:
-                        self.adb.click_ui(x, y, w, h)
-                    self.cooldown[key] = now
-                    return True
-        return False
-
-    def match_template(self, frame, template_path, threshold=0.7):
-        import cv2
-        import numpy as np
-        template = cv2.imread(template_path, cv2.IMREAD_COLOR)
-        if template is None or frame is None:
-            return None
-        # 轉灰階
-        frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if len(frame.shape) == 3 else frame
-        template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY) if len(template.shape) == 3 else template
-        res = cv2.matchTemplate(frame_gray, template_gray, cv2.TM_CCOEFF_NORMED)
-        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
-        if max_val >= threshold:
-            h, w = template_gray.shape[:2]
-            return (max_loc[0], max_loc[1], w, h)
+def get_monster_detector(config=None):
+    """獲取怪物檢測器實例"""
+    try:
+        detector_logger = get_logger("MonsterDetector")
+        detector_logger.info("創建極簡怪物檢測器...")
+        detector = SimpleMonsterDetector(config=config)
+        
+        # 獲取初始化資訊
+        info = detector.get_monster_info()
+        detector_logger.info(f"極簡檢測器已初始化：{info['loaded_monsters']} 種怪物，{info['total_templates']} 個模板，閾值：{info['detection_threshold']}")
+        
+        return detector
+    except Exception as e:
+        detector_logger = get_logger("MonsterDetector")
+        detector_logger.error(f"創建怪物檢測器失敗: {e}")
         return None
 
-class OptimizedMonsterDetector:
-    def __init__(self, config):
-        self.config = config
-        
-        # ✅ 新增：效能優化相關
-        self.use_template_matching = True
-        self.detector = cv2.ORB_create(
-            nfeatures=200,  # 減少特徵點
-            scaleFactor=1.2,
-            nlevels=4  # 減少金字塔層數
-        )
-        
-        # 記憶體池
-        self.memory_pool = {
-            'gray_frames': [],
-            'temp_arrays': []
-        }
-        
-        # 檢測佇列
-        self.detection_queue = queue.Queue(maxsize=2)
-        self.result_queue = queue.Queue(maxsize=5)
-        
-        # 啟動異步檢測
-        self._start_async_detection()
-        
-        print("✅ 怪物檢測器已初始化")
-    
-    def _start_async_detection(self):
-        """啟動異步檢測"""
-        self.detection_thread = threading.Thread(
-            target=self._async_detection_worker,
-            daemon=True
-        )
-        self.detection_thread.start()
-    
-    def _async_detection_worker(self):
-        """異步檢測工作執行緒"""
-        while True:
-            try:
-                frame = self.detection_queue.get(timeout=1)
-                if frame is not None:
-                    monsters = self._fast_detect_monsters(frame)
-                    try:
-                        self.result_queue.put(monsters, block=False)
-                    except queue.Full:
-                        pass
-            except queue.Empty:
-                continue
-            except Exception as e:
-                print(f"❌ 異步檢測失敗: {e}")
-    
-    def _fast_detect_monsters(self, frame):
-        """快速怪物檢測"""
-        try:
-            if self.use_template_matching:
-                return self._template_matching_only(frame)
-            else:
-                return self._reduced_feature_detection(frame)
-        except Exception as e:
-            print(f"❌ 怪物檢測失敗: {e}")
-            return []
-    
-    def _template_matching_only(self, frame):
-        """僅使用模板匹配"""
-        try:
-            # 獲取灰度圖
-            gray = self._get_gray_frame(frame)
-            
-            monsters = []
-            for template_name, template in self.templates.items():
-                # 使用模板匹配
-                result = cv2.matchTemplate(
-                    gray, template, cv2.TM_CCOEFF_NORMED
-                )
-                locations = np.where(result >= self.config.get('detection_threshold', 0.7))
-                
-                for pt in zip(*locations[::-1]):
-                    monsters.append({
-                        'type': template_name,
-                        'confidence': result[pt[1], pt[0]],
-                        'location': (pt[0], pt[1], template.shape[1], template.shape[0])
-                    })
-            
-            return monsters
-            
-        except Exception as e:
-            print(f"❌ 模板匹配失敗: {e}")
-            return []
-    
-    def _reduced_feature_detection(self, frame):
-        """減少特徵點檢測"""
-        try:
-            # 獲取灰度圖
-            gray = self._get_gray_frame(frame)
-            
-            # 檢測特徵點
-            keypoints = self.detector.detect(gray, None)
-            
-            # 計算描述符
-            keypoints, descriptors = self.detector.compute(gray, keypoints)
-            
-            # 匹配特徵點
-            monsters = []
-            for template_name, template_desc in self.template_descriptors.items():
-                matches = self.matcher.knnMatch(descriptors, template_desc, k=2)
-                
-                good_matches = []
-                for m, n in matches:
-                    if m.distance < 0.75 * n.distance:
-                        good_matches.append(m)
-                
-                if len(good_matches) > 10:
-                    monsters.append({
-                        'type': template_name,
-                        'confidence': len(good_matches) / len(matches),
-                        'location': self._get_bounding_box(keypoints, good_matches)
-                    })
-            
-            return monsters
-            
-        except Exception as e:
-            print(f"❌ 特徵檢測失敗: {e}")
-            return []
-    
-    def _get_gray_frame(self, frame):
-        """從記憶體池獲取灰度圖"""
-        try:
-            shape = frame.shape[:2]
-            for gray in self.memory_pool['gray_frames']:
-                if gray.shape == shape:
-                    self.memory_pool['gray_frames'].remove(gray)
-                    cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY, dst=gray)
-                    return gray
-            
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            return gray
-            
-        except Exception as e:
-            print(f"❌ 獲取灰度圖失敗: {e}")
-            return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    
-    def _return_gray_frame(self, gray):
-        """歸還灰度圖到記憶體池"""
-        if len(self.memory_pool['gray_frames']) < 5:
-            self.memory_pool['gray_frames'].append(gray)
-    
-    def _get_bounding_box(self, keypoints, matches):
-        """計算邊界框"""
-        try:
-            points = [keypoints[m.queryIdx].pt for m in matches]
-            x = min(p[0] for p in points)
-            y = min(p[1] for p in points)
-            w = max(p[0] for p in points) - x
-            h = max(p[1] for p in points) - y
-            return (int(x), int(y), int(w), int(h))
-        except Exception as e:
-            print(f"❌ 計算邊界框失敗: {e}")
-            return (0, 0, 0, 0)
+def init_monster_detector(config=None):
+    """初始化怪物檢測器"""
+    return get_monster_detector(config)
 
-# 創建並導出怪物檢測器實例
-monster_detector = MapleStoryMonsterDetector()
-print("✅ 怪物檢測器已初始化")
+
+# === UI模板輔助類別（保持相容性）===
+
+class UITemplateHelper:
+    """UI模板輔助工具 - 楓之谷 Worlds 原生遊戲"""
+    
+    def __init__(self, adb=None, cooldown_interval=0.7):
+        # ADB 控制器已移除 - 楓之谷 Worlds 原生遊戲
+        self.cooldown_interval = cooldown_interval
+        self.last_click_time = 0
+        self.logger = get_logger("UITemplateHelper")
+    
+    def detect_and_click(self, frame, template_path, label, color, key, now, threshold=0.7):
+        """檢測並模擬點擊 - 楓之谷 Worlds 原生遊戲"""
+        try:
+            # 檢查冷卻時間
+            if now - self.last_click_time < self.cooldown_interval:
+                return False
+            
+            # 模板匹配
+            result = self.match_template(frame, template_path, threshold)
+            if result:
+                x, y, confidence = result
+                
+                self.logger.info(f"模擬點擊 {label}: ({x}, {y}) 信心度: {confidence:.3f} - 楓之谷 Worlds")
+                
+                # 楓之谷 Worlds 原生遊戲 - 模擬點擊
+                success = True  # 模擬成功
+                
+                if success:
+                    self.last_click_time = now
+                    return True
+                    
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"{label} 檢測點擊失敗: {e}")
+            return False
+    
+    def match_template(self, frame, template_path, threshold=0.7):
+        """模板匹配"""
+        try:
+            template = cv2.imread(template_path, cv2.IMREAD_COLOR)
+            if template is None:
+                return None
+            
+            result = cv2.matchTemplate(frame, template, cv2.TM_CCOEFF_NORMED)
+            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+            
+            if max_val >= threshold:
+                h, w = template.shape[:2]
+                center_x = max_loc[0] + w // 2
+                center_y = max_loc[1] + h // 2
+                return (center_x, center_y, max_val)
+            
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"模板匹配失敗: {e}")
+            return None 
