@@ -11,31 +11,35 @@ class Logger:
     def __init__(self, module_name: str = "Unknown"):
         self.module_name = module_name
     
+    def _get_timestamp(self):
+        """獲取時間戳記"""
+        return time.strftime("%H:%M:%S", time.localtime())
+    
     def info(self, message: str):
-        """信息日誌"""
-        timestamp = time.strftime("%H:%M:%S")
+        """記錄一般資訊"""
+        timestamp = self._get_timestamp()
         print(f"[{timestamp}] ℹ️ {self.module_name}: {message}")
     
     def success(self, message: str):
-        """成功日誌"""
-        timestamp = time.strftime("%H:%M:%S")
+        """記錄成功資訊"""
+        timestamp = self._get_timestamp()
         print(f"[{timestamp}] ✅ {self.module_name}: {message}")
     
     def warning(self, message: str):
-        """警告日誌"""
-        timestamp = time.strftime("%H:%M:%S")
+        """記錄警告資訊"""
+        timestamp = self._get_timestamp()
         print(f"[{timestamp}] ⚠️ {self.module_name}: {message}")
     
-    def error(self, message: str, exception: Optional[Exception] = None):
-        """錯誤日誌"""
-        timestamp = time.strftime("%H:%M:%S")
+    def error(self, message: str, exception: Exception = None):
+        """記錄錯誤資訊"""
+        timestamp = self._get_timestamp()
         print(f"[{timestamp}] ❌ {self.module_name}: {message}")
         if exception:
             print(f"    └─ 異常: {exception}")
     
     def debug(self, message: str):
-        """調試日誌"""
-        timestamp = time.strftime("%H:%M:%S")
+        """記錄調試資訊"""
+        timestamp = self._get_timestamp()
         print(f"[{timestamp}] 🔍 {self.module_name}: {message}")
     
     def init_success(self, component_name: str):

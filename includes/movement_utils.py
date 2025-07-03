@@ -7,6 +7,9 @@
 
 import numpy as np
 from typing import Tuple, Optional, List, Dict, Any
+import logging
+
+logger = logging.getLogger(__name__)
 
 class MovementUtils:
     """✅ 基於搜索結果[18]的統一移動工具類"""
@@ -59,25 +62,25 @@ class MovementUtils:
                         continue
             
             if not walkable_positions:
-                print("❌ 沒有找到可行走位置")
+                logger.warning("沒有找到可行走位置")
                 return None
             
             min_safe_x = min(walkable_positions)
             max_safe_x = max(walkable_positions)
             current_x = current_pos[0]
             
-            print(f"🛡️ 可行走範圍: [{min_safe_x:.3f}, {max_safe_x:.3f}]")
-            print(f"📍 當前位置X: {current_x:.3f}")
+            logger.debug(f"可行走範圍: [{min_safe_x:.3f}, {max_safe_x:.3f}]")
+            logger.debug(f"當前位置X: {current_x:.3f}")
             
             # ✅ 強制邊界修正：如果角色在範圍外，直接拉回
             if current_x < min_safe_x:
                 emergency_target_x = min_safe_x + 0.01
-                print(f"🚨 角色在左邊界外，強制拉回: ({emergency_target_x:.3f}, {current_pos[1]})")
+                logger.warning(f"角色在左邊界外，強制拉回: ({emergency_target_x:.3f}, {current_pos[1]})")
                 return (emergency_target_x, current_pos[1])
             
             elif current_x > max_safe_x:
                 emergency_target_x = max_safe_x - 0.01
-                print(f"🚨 角色在右邊界外，強制拉回: ({emergency_target_x:.3f}, {current_pos[1]})")
+                logger.warning(f"角色在右邊界外，強制拉回: ({emergency_target_x:.3f}, {current_pos[1]})")
                 return (emergency_target_x, current_pos[1])
             
             else:
@@ -87,7 +90,7 @@ class MovementUtils:
                                 min(current_x - min_safe_x - 0.01, max_safe_x - current_x - 0.01))
                 
                 if safe_distance <= 0:
-                    print("🔒 已在邊界，無法移動")
+                    logger.debug("已在邊界，無法移動")
                     return None
                 
                 # 選擇移動方向（朝向中心）
@@ -100,11 +103,11 @@ class MovementUtils:
                 # ✅ 最終安全檢查
                 final_x = max(min_safe_x + 0.01, min(safe_target_x, max_safe_x - 0.01))
                 
-                print(f"🎯 安全移動目標: {current_pos} -> ({final_x}, {current_pos[1]}) 距離:{abs(final_x-current_x):.3f}")
+                logger.debug(f"安全移動目標: {current_pos} -> ({final_x}, {current_pos[1]}) 距離:{abs(final_x-current_x):.3f}")
                 return (final_x, current_pos[1])
         
         except Exception as e:
-            print(f"❌ 安全目標計算失敗: {e}")
+            logger.error(f"安全目標計算失敗: {e}")
             return None
     
     @staticmethod
@@ -239,13 +242,13 @@ class MovementUtils:
     
     @staticmethod
     def convert_direction_to_movement_command(direction: Tuple[float, float]) -> str:
-        """✅ 修正版：8方向轉換"""
+        """修正版：8方向轉換"""
         if not direction or (direction[0] == 0 and direction[1] == 0):
             return "none"
         
         dx, dy = direction
         
-        # ✅ 優先水平移動（符合2D橫向遊戲）
+        # 優先水平移動（符合2D橫向遊戲）
         if abs(dx) > abs(dy) * 1.5:  # 水平優先
             return 'right' if dx > 0 else 'left'
         elif abs(dy) > abs(dx) * 1.5:  # 垂直移動
@@ -278,7 +281,7 @@ class MovementUtils:
         current_x, current_y = position
         walkable_positions = []
         
-        print(f"🔍 檢查位置: ({current_x:.5f}, {current_y:.5f})")
+        logger.debug(f"檢查位置: ({current_x:.5f}, {current_y:.5f})")
         
         # 收集所有可行走位置
         for pos_key, area_type in area_grid.items():
@@ -297,7 +300,7 @@ class MovementUtils:
                     continue
         
         if not walkable_positions:
-            print("❌ 沒有可行走位置")
+            logger.warning("沒有可行走位置")
             return False
         
         # ✅ 精確的範圍計算
@@ -305,12 +308,63 @@ class MovementUtils:
             x_diff = abs(current_x - wx)
             y_diff = abs(current_y - wy)
             
-            print(f"📏 與 ({wx:.3f}, {wy:.3f}) 的距離: X差={x_diff:.5f}, Y差={y_diff:.5f}")
+            logger.debug(f"與 ({wx:.3f}, {wy:.3f}) 的距離: X差={x_diff:.5f}, Y差={y_diff:.5f}")
             
             # ✅ 使用不同的X和Y容忍度
             if x_diff <= tolerance_x and y_diff <= tolerance_y:
-                print(f"✅ 位置匹配: 在可行走區域內")
+                logger.debug("位置匹配: 在可行走區域內")
                 return True
         
-        print(f"❌ 位置不匹配: 不在任何可行走區域內")
+        logger.warning("位置不匹配: 不在任何可行走區域內")
         return False
+
+def find_safe_movement_target(current_pos, walkable_areas, target_pos=None):
+    """找到安全的移動目標"""
+    try:
+        if not walkable_areas:
+            logger.warning("沒有找到可行走位置")
+            return None
+        
+        # 獲取可行走區域的邊界
+        walkable_x = [float(pos.split(',')[0]) for pos in walkable_areas.keys() if ',' in pos]
+        if not walkable_x:
+            return None
+        
+        min_safe_x = min(walkable_x)
+        max_safe_x = max(walkable_x)
+        current_x = current_pos[0]
+        
+        logger.debug(f"可行走範圍: [{min_safe_x:.3f}, {max_safe_x:.3f}]")
+        logger.debug(f"當前位置X: {current_x:.3f}")
+        
+        # 檢查是否在邊界外
+        if current_x < min_safe_x:
+            emergency_target_x = min_safe_x + 0.02
+            logger.warning(f"角色在左邊界外，強制拉回: ({emergency_target_x:.3f}, {current_pos[1]})")
+            return (emergency_target_x, current_pos[1])
+        elif current_x > max_safe_x:
+            emergency_target_x = max_safe_x - 0.02
+            logger.warning(f"角色在右邊界外，強制拉回: ({emergency_target_x:.3f}, {current_pos[1]})")
+            return (emergency_target_x, current_pos[1])
+        
+        # 如果指定了目標位置，檢查是否安全
+        if target_pos:
+            target_x = target_pos[0]
+            if min_safe_x <= target_x <= max_safe_x:
+                return target_pos
+            else:
+                # 將目標限制在安全範圍內
+                final_x = max(min_safe_x, min(max_safe_x, target_x))
+                logger.debug(f"安全移動目標: {current_pos} -> ({final_x}, {current_pos[1]}) 距離:{abs(final_x-current_x):.3f}")
+                return (final_x, current_pos[1])
+        
+        # 沒有指定目標，檢查是否已在邊界
+        if abs(current_x - min_safe_x) < 0.01 or abs(current_x - max_safe_x) < 0.01:
+            logger.debug("已在邊界，無法移動")
+            return None
+        
+        return current_pos
+        
+    except Exception as e:
+        logger.error(f"安全目標計算失敗: {e}")
+        return None

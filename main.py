@@ -13,8 +13,9 @@ from modules.coordinate import TemplateMatcherTracker
 from modules.auto_combat_simple import SimpleCombat
 from modules.waypoint_editor import WaypointEditor
 from modules.simple_waypoint_system import SimpleWaypointSystem
-from modules.simple_adb import SimpleADB
-from modules.health_mana_detector import HealthManaDetector
+# ADB 支援已移除 - 專注楓之谷 Worlds 原生遊戲
+from modules.health_mana_detector_hybrid import HealthManaDetectorHybrid  # HUD血條檢測（多模板匹配+填充分析）
+from modules.character_health_detector import CharacterHealthDetector  # 角色血條檢測
 from includes.config_utils import ConfigUtils
 from includes.log_utils import get_logger
 
@@ -22,7 +23,7 @@ from includes.log_utils import get_logger
 class MapleStoryHelper:
     """效能優化版 MapleStory Helper - AutoMaple 風格"""
     
-    def __init__(self, config_path="configs/bluestacks.yaml"):
+    def __init__(self, config_path="configs/config.yaml"):
         # ✅ 使用共用工具初始化
         self.logger = get_logger("MapleStoryHelper")
         
@@ -31,8 +32,7 @@ class MapleStoryHelper:
         # 先載入設定
         self.config = self.load_config(config_path)
         
-        # 初始化 ADB 控制器，傳入 config
-        self.adb = SimpleADB(self.config)
+        # ADB 控制器已移除 - 專注楓之谷 Worlds 原生遊戲
         
         # 基本狀態
         self.is_enabled = False
@@ -63,20 +63,34 @@ class MapleStoryHelper:
         self.position_cache = None
         self.cache_duration = capturer_config.get('cache_duration', 0.1)  # 100ms緩存
         
-        # 怪物檢測器
-        from includes.simple_template_utils import monster_detector
-        self.monster_detector = monster_detector
+        # 怪物檢測器 - 簡化版
+        from includes.simple_template_utils import get_monster_detector
+        self.monster_detector = get_monster_detector(self.config)
         
-        # 血條檢測器 - 傳入完整的 config
-        self.health_detector = HealthManaDetector(config=self.config)
+        # ✅ 分離的血條檢測器（多模板匹配+填充分析）
+        self.hud_health_detector = HealthManaDetectorHybrid(
+            template_dir="templates/MainScreen",
+            config=self.config
+        )
+        self.character_health_detector = CharacterHealthDetector(
+            template_dir="templates/MainScreen", 
+            config=self.config
+        )
         self.last_health_check = 0
         self.health_check_interval = 0.5  # 每0.5秒檢查一次
+        
+        self.logger.info("✅ 血條檢測系統已分離：HUD檢測器（多模板匹配+填充分析）+ 角色血條檢測器")
         
         # ✅ 添加路徑點系統 - 傳入對應的 config
         waypoint_config = self.config.get('waypoint_system', {})
         self.waypoint_system = SimpleWaypointSystem(config=waypoint_config)
         self.init_waypoints()
         self.logger.info("路徑點系統已初始化")
+        
+        # ✅ 添加歷史幀管理（運動檢測需要）
+        self.frame_history = []
+        self.max_history_frames = 3  # 保留最近3幀
+        self.frame_history_enabled = True
         
         # 初始化核心組件
         self.init_components()
@@ -96,19 +110,18 @@ class MapleStoryHelper:
     def init_components(self):
         """只初始化核心組件 - 效能優化版"""
         try:
-            # 畫面捕獲 - 傳入對應的 config
+            # 畫面捕獲 - 傳入完整的 config
             self.logger.info("初始化畫面捕獲...")
-            capturer_config = self.config.get('capturer', {})
-            self.capturer = SimpleCapturer(config=capturer_config)
+            self.capturer = SimpleCapturer(config=self.config)
             
             # 角色追蹤 - 傳入對應的 config
             self.logger.info("初始化角色追蹤...")
             self.tracker = TemplateMatcherTracker(config=self.config, capturer=self.capturer)
             
-            # 簡單戰鬥 - 傳入對應的 config
+            # 簡單戰鬥 - 傳入對應的 config 並共用檢測器
             self.logger.info("初始化戰鬥系統...")
             combat_config = self.config.get('combat', {})
-            self.auto_combat = SimpleCombat(config=combat_config)
+            self.auto_combat = SimpleCombat(config=combat_config, monster_detector=self.monster_detector)
             
             # ✅ 更詳細的錯誤檢查
             if not self.waypoint_system:
@@ -117,6 +130,10 @@ class MapleStoryHelper:
             # 戰鬥系統
             self.logger.info("設置戰鬥系統...")
             self.auto_combat.set_waypoint_system(self.waypoint_system)
+            
+            # ✅ 設置分離的血條檢測器
+            self.auto_combat.set_hud_health_detector(self.hud_health_detector)  # HUD檢測器
+            self.auto_combat.set_character_health_detector(self.character_health_detector)  # 角色血條檢測器
             self.auto_combat.diagnose_waypoint_system()
             
             # ✅ 從設定檔讀取戰鬥設定
@@ -138,6 +155,8 @@ class MapleStoryHelper:
             self.logger.info("\n戰鬥系統狀態檢查:")
             self.logger.info(f"  - 路徑點系統: {'已設置' if self.auto_combat.waypoint_system else '未設置'}")
             self.logger.info(f"  - 控制器: {'已連接' if self.auto_combat.controller and self.auto_combat.controller.is_connected else '未連接'}")
+            self.logger.info(f"  - HUD血條檢測器: {'已設置' if hasattr(self.auto_combat, 'hud_health_detector') else '未設置'}")
+            self.logger.info(f"  - 角色血條檢測器: {'已設置' if hasattr(self.auto_combat, 'character_health_detector') else '未設置'}")
             self.logger.info(f"  - 戰鬥模式: {self.auto_combat.hunt_settings.get('combat_mode', '未設定')}")
             self.logger.info(f"  - is_enabled: {self.auto_combat.is_enabled}")
             self.logger.info(f"  - auto_hunt_mode: {self.auto_combat.auto_hunt_mode}")
@@ -154,6 +173,35 @@ class MapleStoryHelper:
             if hasattr(self, 'auto_combat'):
                 self.logger.info(f"   - 戰鬥系統狀態: is_enabled={self.auto_combat.is_enabled}")
             raise
+    
+    def connect_shared_detection_service(self, gui):
+        """連接共享檢測服務，避免重複處理"""
+        try:
+            if hasattr(self, 'auto_combat') and hasattr(gui, '_shared_results'):
+                # 設置戰鬥系統的共享怪物檢測回調
+                def get_shared_monsters():
+                    """獲取GUI檢測循環的共享怪物結果"""
+                    with gui._detection_lock:
+                        shared_data = gui._shared_results.copy()
+                        return shared_data.get('monsters', [])
+                
+                # 設置戰鬥系統的共享角色血條檢測回調
+                def get_shared_health_bars():
+                    """獲取GUI檢測循環的共享角色血條結果"""
+                    with gui._detection_lock:
+                        shared_data = gui._shared_results.copy()
+                        return shared_data.get('character_health_bars', [])
+                
+                self.auto_combat.set_shared_detection_callback(get_shared_monsters)
+                self.auto_combat.set_shared_health_detection_callback(get_shared_health_bars)
+                self.logger.info("✅ 已連接共享檢測服務（怪物+血條），避免重複處理")
+                return True
+            else:
+                self.logger.warning("⚠️ 無法連接共享檢測服務")
+                return False
+        except Exception as e:
+            self.logger.error(f"連接共享檢測服務失敗: {e}")
+            return False
     
     def open_editor(self):
         """✅ 重構版：開啟或顯示已存在的編輯器實例"""
@@ -189,24 +237,13 @@ class MapleStoryHelper:
                 self.logger.info(f"已載入配置檔: {config_path}")
                 return config
             else:
-                self.logger.warning(f"設定檔為空或載入失敗: {config_path}")
-                return self._get_default_config()
+                self.logger.error(f"設定檔為空或載入失敗: {config_path}")
+                raise RuntimeError(f"無法載入設定檔: {config_path}")
                 
         except Exception as e:
             self.logger.error(f"載入配置失敗: {e}")
-            return self._get_default_config()
-    
-    def _get_default_config(self):
-        """獲取預設配置"""
-        return {
-            "app": {
-                "window_title": "BlueStacks App Player",
-                "capture_region": [0, 0, 1920, 1080],
-                "detection_threshold": 0.3,
-                "update_interval": 3000,
-                "auto_save": True
-            }
-        }
+            raise RuntimeError(f"設定檔載入失敗: {e}")
+
     
     def get_waypoint_info(self):
         """獲取路徑點資訊"""
@@ -232,8 +269,7 @@ class MapleStoryHelper:
         self._thread = threading.Thread(target=self.main_loop, daemon=True)
         self._thread.start()
         self.logger.info("效能優化版主循環已啟動")
-        self.logger.info(f"主循環狀態: is_enabled={self.is_enabled}")
-        self.logger.info(f"戰鬥系統狀態: is_enabled={getattr(self.auto_combat, 'is_enabled', False)}")
+        # 主循環已啟動
 
     def main_loop(self):
         """✅ 效能優化版主循環"""
@@ -258,6 +294,13 @@ class MapleStoryHelper:
                     if frame is not None:
                         self.frame_cache = frame
                         self.cache_timestamp = current_time
+                        
+                        # ✅ 添加歷史幀管理（運動檢測需要）
+                        if self.frame_history_enabled:
+                            self.frame_history.append(frame.copy())
+                            # 保持歷史幀數量限制
+                            if len(self.frame_history) > self.max_history_frames:
+                                self.frame_history.pop(0)
                 
                 # 使用緩存的畫面
                 frame = self.frame_cache
@@ -277,7 +320,9 @@ class MapleStoryHelper:
                 # ✅ 效能優化：智能戰鬥更新
                 if (self.auto_combat and self.auto_combat.is_enabled and 
                     self.should_update('combat_update')):
-                    self.auto_combat.update(rel_pos, frame)
+                    # 傳遞歷史幀給戰鬥系統（用於運動檢測）
+                    history_frames = self.frame_history if self.frame_history_enabled else None
+                    self.auto_combat.update(rel_pos, frame, frame_history=history_frames)
                 
                 # ✅ 效能優化：降低血條檢查頻率
                 if self.should_update('health_check'):
@@ -298,8 +343,7 @@ class MapleStoryHelper:
                     last_fps_time = current_time
                     
                     # 顯示效能資訊
-                    if fps > 0:
-                        self.logger.info(f"效能: {fps:.1f} FPS, 平均循環時間: {self.performance_stats['avg_loop_time']*1000:.1f}ms")
+                    # 效能統計更新
                 
                 # ✅ 效能優化：動態睡眠時間
                 loop_time = time.time() - loop_start_time
@@ -375,11 +419,6 @@ class MapleStoryHelper:
         return {
             'tracking_enabled': self.is_enabled,
             'combat_enabled': getattr(self.auto_combat, 'is_enabled', False),
-            'adb_connected': (
-                self.auto_combat.controller.is_connected
-                if hasattr(self.auto_combat, 'controller') and self.auto_combat.controller
-                else False
-            ),
             'performance': self.performance_stats
         }
 
@@ -511,7 +550,7 @@ class MapleStoryHelper:
         cursor = cursor_map.get(self.current_mode, Qt.ArrowCursor)
         if hasattr(self, 'canvas') and self.canvas:
             self.canvas.setCursor(cursor)
-            self.logger.info(f"游標已切換: {self.current_mode}")  # 加入日誌
+            # 游標已切換
 
 def main():
     """主程式 - PyQt5版本"""
@@ -534,25 +573,16 @@ def main():
         from modules.simple_gui_monster_display import MonsterDetectionGUI
         gui = MonsterDetectionGUI(app, config=app.config)
         
-        # ✅ PyQt5 按鈕添加方式
-        try:
-            logger.info("🔧 開始添加路徑編輯按鈕...")
-            logger.info(f"  - GUI 物件: {gui}")
-            logger.info(f"  - GUI 類型: {type(gui)}")
-            logger.info(f"  - 是否有 add_waypoint_button 方法: {hasattr(gui, 'add_waypoint_button')}")
-            
-            if hasattr(gui, 'add_waypoint_button'):
-                logger.info("✅ 找到 add_waypoint_button 方法，開始添加按鈕...")
-                success = gui.add_waypoint_button("🗺️ 編輯路徑", app.open_editor)
-                logger.info(f"✅ 按鈕添加結果: {success}")
-            else:
-                logger.warning("⚠️ GUI 沒有 add_waypoint_button 方法")
-                logger.info("💡 可使用快捷鍵 Ctrl+W 開啟路徑編輯器")
-                
-        except Exception as e:
-            logger.error(f"❌ 添加編輯按鈕失敗: {e}")
-            import traceback
-            traceback.print_exc()
+        # ✅ 連接共享檢測服務，避免重複處理
+        shared_connected = app.connect_shared_detection_service(gui)
+        if shared_connected:
+            logger.info("🔄 共享檢測服務已連接 - 戰鬥系統將使用GUI檢測結果，避免重複血條檢測")
+        else:
+            logger.warning("⚠️ 共享檢測服務連接失敗 - 將使用獨立檢測（可能有重複處理）")
+        
+        # ✅ 路徑編輯功能已整合到自動打怪區塊中，無需額外添加按鈕
+        # 路徑編輯功能已整合到自動打怪區塊中
+        logger.info("💡 請使用自動打怪區塊中的「🗺️ 編輯路徑」按鈕")
         
         # 啟動應用
         app.start()

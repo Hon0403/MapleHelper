@@ -1,11 +1,12 @@
-PyQt5>=5.15.0
-opencv-python>=4.5.0
-numpy>=1.19.0
-Pillow>=8.0.0
-adbutils>=0.10.0
-
-# å¦‚éœ€ SIFT æ”¯æ´ï¼Œå»ºè­°å®‰è£ opencv-contrib-python
-opencv-contrib-python>=4.5.0
-
-# è‹¥æœ‰ç”¨åˆ° yaml è¨­å®šæª”
-pyyaml>=5.3.1 
+PyQt5 
+opencv-python 
+numpy 
+Pillow 
+adbutils 
+pytesseract 
+  
+# ¦p»Ý SIFT ¤ä´©¡A«ØÄ³¦w¸Ë opencv-contrib-python  
+opencv-contrib-python 
+  
+# ­Y¦³¥Î¨ì yaml ³]©wÀÉ  
+pyyaml
